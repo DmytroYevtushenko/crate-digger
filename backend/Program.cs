@@ -107,7 +107,7 @@ app.MapPost("/api/sources/{id:long}/enrich", async (long id, int? limit) =>
 
 app.MapPost("/api/sources/{id:long}/download", (long id, int? limit) =>
 {
-    var n = downloader.Queue(id, Math.Clamp(limit ?? 10, 1, 500), out var error);
+    var n = downloader.Queue(id, Math.Clamp(limit ?? 10, 1, 5000), out var error);
     return error is null
         ? Results.Ok(new { queued = n, sldlConfigured = sldl.IsConfigured })
         : Results.NotFound(new { error });
@@ -139,6 +139,37 @@ app.MapPost("/api/tracks/{id:long}/{action}", (long id, string action) =>
     return n > 0 ? Results.Ok(new { id, state = newState }) : Results.NotFound(new { error = "track not found" });
 });
 
+// Manually fix a track's metadata (e.g. artist wrongly = channel name). Marks enriched so
+// a later download won't overwrite the manual fix.
+app.MapPut("/api/tracks/{id:long}", (long id, TrackEdit e) =>
+{
+    using var c = db.Open();
+    var n = c.Execute(
+        "UPDATE tracks SET artist=@Artist, title=@Title, album=@Album, enriched=1, updated_at=datetime('now') WHERE id=@id",
+        new { e.Artist, e.Title, e.Album, id });
+    return n > 0 ? Results.Ok(new { id }) : Results.NotFound(new { error = "track not found" });
+});
+
+// Track detail: the track plus its last download attempt (for failure reason / path).
+app.MapGet("/api/tracks/{id:long}", (long id) =>
+{
+    using var c = db.Open();
+    var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id });
+    if (t is null) return Results.NotFound();
+    var attempt = c.QueryFirstOrDefault(
+        "SELECT started_at, finished_at, result, failure_reason FROM download_attempts WHERE track_id=@id ORDER BY id DESC LIMIT 1",
+        new { id });
+    return Results.Ok(new { track = t, lastAttempt = attempt });
+});
+
+// Bulk: requeue all Failed tracks of a source.
+app.MapPost("/api/sources/{id:long}/retry-failed", (long id) =>
+{
+    using var c = db.Open();
+    var n = c.Execute("UPDATE tracks SET state='Pending', updated_at=datetime('now') WHERE source_id=@id AND state='Failed'", new { id });
+    return Results.Ok(new { requeued = n });
+});
+
 app.MapGet("/api/cookies/status", () =>
 {
     var fi = new FileInfo(cookiesPath);
@@ -156,7 +187,7 @@ app.MapPost("/api/cookies", async (HttpRequest req) =>
     return Results.Ok(new { present = true });
 });
 
-app.MapGet("/api/tracks", (int? limit, int? offset, long? sourceId, string? state, string? q) =>
+app.MapGet("/api/tracks", (int? limit, int? offset, long? sourceId, string? state, string? q, string? sort) =>
 {
     using var c = db.Open();
     var lim = Math.Clamp(limit ?? 50, 1, 500);
@@ -167,11 +198,19 @@ app.MapGet("/api/tracks", (int? limit, int? offset, long? sourceId, string? stat
     if (!string.IsNullOrWhiteSpace(state)) where.Add("state=@state");
     if (!string.IsNullOrWhiteSpace(q)) where.Add("(artist LIKE @q OR title LIKE @q OR album LIKE @q)");
     var wsql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+    var order = sort switch
+    {
+        "artist" => "artist COLLATE NOCASE",
+        "title" => "title COLLATE NOCASE",
+        "album" => "album COLLATE NOCASE",
+        "state" => "state COLLATE NOCASE",
+        _ => "updated_at DESC",
+    };
     var pars = new { sourceId, state, q = "%" + (q ?? "") + "%", lim, off };
 
     var total = c.ExecuteScalar<long>($"SELECT COUNT(*) FROM tracks {wsql}", pars);
     var items = c.Query<Track>(
-        $"SELECT * FROM tracks {wsql} ORDER BY updated_at DESC LIMIT @lim OFFSET @off", pars);
+        $"SELECT * FROM tracks {wsql} ORDER BY {order} LIMIT @lim OFFSET @off", pars);
     return Results.Ok(new { total, items });
 });
 

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Dapper;
 
 namespace Crate.Api;
@@ -9,11 +10,14 @@ namespace Crate.Api;
 /// <summary>
 /// Scans the master library + inbox (recursively), reads tags/duration via ffprobe into
 /// library_files (incremental by path+mtime+size), then matches files to tracks so that
-/// manual (Picard) additions are recognized: a Pending/Failed track matched by a file
-/// becomes Manual. Files matching nothing are just orphans (fine).
-/// The DB is the source of truth — old sldl indexes are not consulted.
+/// tracks you already own become Manual (and aren't downloaded again).
+///
+/// Matching is fuzzy: both sides are cleaned of noise (- Topic, feat., brackets, years,
+/// remaster, official/video/lyrics), tokenized, and compared by word overlap (Jaccard) with
+/// duration as a confirming signal. This bridges messy YouTube titles vs clean Picard tags.
+/// (Transliteration — Cyrillic vs Latin — has no word overlap, so those need a manual track edit.)
 /// </summary>
-public sealed class ReconcileService(Db db, IConfiguration cfg, ILogger<ReconcileService> log)
+public sealed partial class ReconcileService(Db db, IConfiguration cfg, ILogger<ReconcileService> log)
 {
     private static readonly string[] AudioExt = [".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"];
     private volatile bool _running;
@@ -69,33 +73,45 @@ ON CONFLICT(path) DO UPDATE SET
         log.LogInformation("Reconcile: {Res}", _last);
     }
 
-    // Match library files to Pending/Failed tracks by normalized artist+title (+ duration tolerance).
+    private sealed record FileProfile(long Id, string Path, HashSet<string> Title, HashSet<string> Artist, int? Duration);
+
+    // Fuzzy-match unmatched library files to Pending/Failed tracks.
     private int Match()
     {
         using var c = db.Open();
         var files = c.Query<LibraryFile>("SELECT * FROM library_files WHERE matched_track_id IS NULL").ToList();
         var tracks = c.Query<Track>("SELECT * FROM tracks WHERE state IN ('Pending','Failed')").ToList();
 
-        var byKey = new Dictionary<string, List<Track>>();
+        var profiles = files
+            .Select(f => new FileProfile(f.Id, f.Path, Tokens(f.Title), Tokens(f.Artist), f.DurationSec))
+            .Where(p => p.Title.Count > 0)
+            .ToList();
+
+        var matched = 0;
         foreach (var t in tracks)
         {
-            var k = Key(t.Artist, t.Title);
-            if (k == "|") continue;
-            if (!byKey.TryGetValue(k, out var l)) byKey[k] = l = new List<Track>();
-            l.Add(t);
-        }
+            var tTitle = Tokens(t.Title ?? t.RawTitle);
+            if (tTitle.Count == 0) continue;
+            var tArtist = Tokens(t.Artist);
 
-        var used = new HashSet<long>();
-        var matched = 0;
-        foreach (var f in files)
-        {
-            if (!byKey.TryGetValue(Key(f.Artist, f.Title), out var cand)) continue;
-            var t = cand.FirstOrDefault(x => !used.Contains(x.Id) && DurOk(x.DurationSec, f.DurationSec));
-            if (t is null) continue;
-            used.Add(t.Id);
+            FileProfile? best = null;
+            double bestScore = 0;
+            foreach (var f in profiles)
+            {
+                var tj = Jaccard(tTitle, f.Title);
+                if (tj < 0.6) continue;
+                var durClose = t.DurationSec is not null && f.Duration is not null
+                               && Math.Abs(t.DurationSec.Value - f.Duration.Value) <= 7;
+                var aj = Jaccard(tArtist, f.Artist);
+                if (!durClose && aj < 0.34) continue; // need duration OR artist to confirm
+                var score = tj + (durClose ? 0.3 : 0) + aj * 0.3;
+                if (score > bestScore) { bestScore = score; best = f; }
+            }
+            if (best is null) continue;
+
             c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id",
-                new { p = f.Path, id = t.Id });
-            c.Execute("UPDATE library_files SET matched_track_id=@tid WHERE id=@fid", new { tid = t.Id, fid = f.Id });
+                new { p = best.Path, id = t.Id });
+            c.Execute("UPDATE library_files SET matched_track_id=@tid WHERE id=@fid", new { tid = t.Id, fid = best.Id });
             matched++;
         }
         return matched;
@@ -110,17 +126,36 @@ ON CONFLICT(path) DO UPDATE SET
         return roots.Where(Directory.Exists).Distinct();
     }
 
-    private static bool DurOk(int? a, int? b) => a is null || b is null || Math.Abs(a.Value - b.Value) <= 5;
+    // ---- fuzzy text helpers ----
 
-    private static string Key(string? artist, string? title) => Norm(artist) + "|" + Norm(title);
+    [GeneratedRegex(@"[\(\[\{].*?[\)\]\}]")] private static partial Regex BracketRe();
+    [GeneratedRegex(@"(?i)\b(feat|ft|featuring|official|video|lyrics?|audio|remaster(ed)?|remix|hd|hq|topic)\b")] private static partial Regex NoiseRe();
+    [GeneratedRegex(@"\b\d{4}\b")] private static partial Regex YearRe();
 
-    private static string Norm(string? s)
+    private static HashSet<string> Tokens(string? s)
     {
-        if (string.IsNullOrEmpty(s)) return "";
+        var set = new HashSet<string>();
+        if (string.IsNullOrEmpty(s)) return set;
+        var low = s.ToLowerInvariant();
+        low = BracketRe().Replace(low, " ");
+        var fi = low.IndexOf(" feat", StringComparison.Ordinal);
+        if (fi >= 0) low = low[..fi];
+        low = NoiseRe().Replace(low, " ");
+        low = YearRe().Replace(low, " ");
+
         var sb = new StringBuilder();
-        foreach (var ch in s.ToLowerInvariant())
-            sb.Append(char.IsLetterOrDigit(ch) ? ch : ' ');
-        return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        foreach (var ch in low) sb.Append(char.IsLetterOrDigit(ch) ? ch : ' ');
+        foreach (var tok in sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            if (tok.Length > 1) set.Add(tok);
+        return set;
+    }
+
+    private static double Jaccard(HashSet<string> a, HashSet<string> b)
+    {
+        if (a.Count == 0 || b.Count == 0) return 0;
+        var inter = a.Count(b.Contains);
+        var union = a.Count + b.Count - inter;
+        return union == 0 ? 0 : (double)inter / union;
     }
 
     private async Task<(string?, string?, string?, int?)> ProbeAsync(string path, CancellationToken ct)

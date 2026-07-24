@@ -38,6 +38,8 @@ public sealed class Track
     public string? UpdatedAt { get; set; }
 }
 
+public record TrackEdit(string? Artist, string? Title, string? Album);
+
 public sealed class LibraryFile
 {
     public long Id { get; set; }

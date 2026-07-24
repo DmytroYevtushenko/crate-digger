@@ -168,6 +168,30 @@ td:nth-child(2) { white-space: normal; }
 .chk { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); flex: 0 0 auto; }
 .chk input { flex: 0; }
 
+.trackbar { display: flex; gap: 8px; margin-bottom: 10px; }
+.trackbar .search { flex: 1; margin-bottom: 0; }
+.trackbar select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+th.sortable { cursor: pointer; user-select: none; }
+tr.trow { cursor: pointer; }
+tr.trow:hover td { background: rgba(127, 127, 127, 0.06); }
+tr.detailrow td { background: rgba(127, 127, 127, 0.05); }
+.editrow { display: flex; gap: 6px; flex-wrap: wrap; }
+.editrow input {
+  flex: 1 1 140px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 8px;
+}
+
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f6f7f9;
