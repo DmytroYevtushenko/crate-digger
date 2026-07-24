@@ -42,7 +42,25 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
         if (Conflict(fArtist, t.Artist))
             return new VerifyResult(VerifyOutcome.Mismatch, $"artist tag '{fArtist}' != target '{t.Artist}'");
 
-        // 3) acoustic fingerprint via AcoustID (optional)
+        // Confidence gate: skip the network-costly YouTube fingerprint when metadata is already strong
+        // (file artist AND title match the target and duration is near-exact). Only "suspicious" downloads
+        // — weak/missing tags, or duration a few seconds off — get fingerprinted, so YouTube is hit rarely.
+        var strongTags = Matches(fArtist, t.Artist) && Matches(fTitle, t.Title);
+        var tightDur = expected is not null && dur is not null && Math.Abs(dur.Value - expected.Value) <= 2;
+        var confident = strongTags && tightDur;
+
+        // 3) acoustic fingerprint vs the YouTube source (API-free) — only for the ambiguous ones.
+        if (!confident && !string.Equals(cfg["VerifyYtFingerprint"], "false", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var yt = await YtFingerprintAsync(path, t, ct);
+                if (yt is not null) return yt;
+            }
+            catch (Exception ex) { log.LogWarning("YT fingerprint failed: {Msg}", ex.Message); }
+        }
+
+        // 4) acoustic fingerprint via AcoustID (optional, if a key is set)
         if (!string.IsNullOrWhiteSpace(AcoustIdKey))
         {
             try
@@ -63,6 +81,14 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
         var nb = Norm(b);
         if (na.Length == 0 || nb.Length == 0) return false; // can't judge
         return !(na == nb || na.Contains(nb) || nb.Contains(na));
+    }
+
+    // Positive match: both present and one contains the other (normalized).
+    private static bool Matches(string? a, string? b)
+    {
+        var na = Norm(a);
+        var nb = Norm(b);
+        return na.Length > 0 && nb.Length > 0 && (na == nb || na.Contains(nb) || nb.Contains(na));
     }
 
     private static string Norm(string? s)
@@ -140,6 +166,82 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
             }
         }
         return new VerifyResult(VerifyOutcome.Mismatch, "fingerprint matched a different recording");
+    }
+
+    // Compare the downloaded file against a short sample of the YouTube source recording.
+    // Same recording -> low bit-error-rate (BER); a different recording (live/cover) -> high BER.
+    private async Task<VerifyResult?> YtFingerprintAsync(string filePath, Track t, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(t.ExternalId)) return null;
+        var ytdlp = cfg["YtDlpPath"] ?? "yt-dlp";
+        var cookies = cfg["CookiesPath"];
+        var seconds = int.TryParse(cfg["VerifySampleSec"], out var ss) ? ss : 90;
+
+        var tmpDir = Path.Combine(Path.GetTempPath(), "crate-ytref-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var args = new List<string>
+            {
+                "-x", "--audio-format", "wav", "--no-playlist", "--no-warnings",
+                "--download-sections", $"*0-{seconds}", "-o", Path.Combine(tmpDir, "ref.%(ext)s"),
+            };
+            if (!string.IsNullOrEmpty(cookies) && File.Exists(cookies)) { args.Add("--cookies"); args.Add(cookies); }
+            args.Add($"https://music.youtube.com/watch?v={t.ExternalId}");
+
+            var (code, _, err) = await Run(ytdlp, args.ToArray(), ct);
+            var refFile = Directory.EnumerateFiles(tmpDir).FirstOrDefault();
+            if (code != 0 || refFile is null)
+            {
+                log.LogWarning("YT reference download failed for {Id}: {Err}", t.ExternalId, err.Trim());
+                return null; // inconclusive — let tags/duration stand
+            }
+
+            var fpA = await FpcalcRawAsync(filePath, seconds, ct);
+            var fpB = await FpcalcRawAsync(refFile, seconds, ct);
+            if (fpA is null || fpB is null) return null;
+
+            var ber = BestBer(fpA, fpB);
+            var threshold = double.TryParse(cfg["VerifyBerThreshold"], NumberStyles.Float, CultureInfo.InvariantCulture, out var th) ? th : 0.35;
+            log.LogInformation("YT fingerprint track {Id}: BER {Ber:F3} (threshold {Th:F2})", t.Id, ber, threshold);
+            return ber <= threshold
+                ? new VerifyResult(VerifyOutcome.Verified, $"fingerprint matches YouTube (BER {ber:F2})")
+                : new VerifyResult(VerifyOutcome.Mismatch, $"different recording from YouTube (BER {ber:F2})");
+        }
+        finally
+        {
+            try { Directory.Delete(tmpDir, true); } catch { /* ignore */ }
+        }
+    }
+
+    private async Task<uint[]?> FpcalcRawAsync(string path, int seconds, CancellationToken ct)
+    {
+        var (code, outp, _) = await Run(Fpcalc, ["-raw", "-json", "-length", seconds.ToString(), path], ct);
+        if (code != 0) return null;
+        using var doc = JsonDocument.Parse(outp);
+        if (!doc.RootElement.TryGetProperty("fingerprint", out var fp) || fp.ValueKind != JsonValueKind.Array) return null;
+        var arr = new uint[fp.GetArrayLength()];
+        var i = 0;
+        foreach (var el in fp.EnumerateArray()) arr[i++] = (uint)el.GetInt64();
+        return arr;
+    }
+
+    // Best bit-error-rate over a small alignment offset search.
+    private static double BestBer(uint[] a, uint[] b)
+    {
+        var best = 1.0;
+        for (var off = -20; off <= 20; off++)
+        {
+            int ai = Math.Max(0, off), bi = Math.Max(0, -off);
+            var n = Math.Min(a.Length - ai, b.Length - bi);
+            if (n < 50) continue;
+            long bits = 0;
+            for (var i = 0; i < n; i++)
+                bits += System.Numerics.BitOperations.PopCount(a[ai + i] ^ b[bi + i]);
+            var ber = bits / (double)(n * 32);
+            if (ber < best) best = ber;
+        }
+        return best;
     }
 
     private static async Task<(int, string, string)> Run(string exe, string[] args, CancellationToken ct)

@@ -143,6 +143,39 @@ ON CONFLICT(path) DO UPDATE SET
             .ToList();
     }
 
+    // Re-run the auto-match for a single track (e.g. right after the user fixed its tags).
+    // Returns true if it matched a library file and moved the track to Manual.
+    public bool RematchOne(long trackId)
+    {
+        using var c = db.Open();
+        var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
+        if (t is null) return false;
+        var tTitle = Tokens(t.Title ?? t.RawTitle);
+        if (tTitle.Count == 0) return false;
+        var tArtist = Tokens(t.Artist);
+
+        var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
+        long bestId = 0; string? bestPath = null; double bestScore = 0;
+        foreach (var f in files)
+        {
+            var ft = Tokens(f.Title);
+            if (ft.Count == 0) continue;
+            var tj = Jaccard(tTitle, ft);
+            if (tj < 0.6) continue;
+            var durClose = t.DurationSec is not null && f.DurationSec is not null
+                           && Math.Abs(t.DurationSec.Value - f.DurationSec.Value) <= 7;
+            var aj = Jaccard(tArtist, Tokens(f.Artist));
+            if (!durClose && aj < 0.34) continue;
+            var score = tj + (durClose ? 0.3 : 0) + aj * 0.3;
+            if (score > bestScore) { bestScore = score; bestId = f.Id; bestPath = f.Path; }
+        }
+        if (bestPath is null) return false;
+
+        c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = bestPath, id = trackId });
+        c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = bestId });
+        return true;
+    }
+
     private IEnumerable<string> Roots()
     {
         var roots = new List<string>();

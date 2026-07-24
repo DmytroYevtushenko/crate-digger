@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import './dashboard.css'
 
@@ -93,6 +93,7 @@ export default function App() {
   const [edit, setEdit] = useState({ artist: '', title: '', album: '' })
   const [detail, setDetail] = useState<Attempt | null>(null)
   const [cands, setCands] = useState<Cand[]>([])
+  const preserveScroll = useRef<number | null>(null)
 
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -131,6 +132,14 @@ export default function App() {
   }, [filter, q, page, sort, sourceFilter])
 
   useEffect(() => { void refreshMeta() }, [refreshMeta])
+
+  // Keep the scroll position across track reloads (edit / actions / pagination) instead of jumping.
+  useLayoutEffect(() => {
+    if (preserveScroll.current != null) {
+      window.scrollTo(0, preserveScroll.current)
+      preserveScroll.current = null
+    }
+  }, [tracks])
   useEffect(() => {
     const h = setTimeout(() => void loadTracks(), 250)
     return () => clearTimeout(h)
@@ -195,6 +204,7 @@ export default function App() {
 
   async function trackAction(id: number, action: 'confirm' | 'reject' | 'retry') {
     setBusy(`t-${action}-${id}`)
+    preserveScroll.current = window.scrollY
     try { await api(`/api/tracks/${id}/${action}`, { method: 'POST' }); await Promise.all([refreshMeta(), loadTracks()]) }
     catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
@@ -213,8 +223,14 @@ export default function App() {
 
   async function saveTrackEdit(id: number) {
     setBusy(`edit-${id}`)
-    try { await api(`/api/tracks/${id}`, { method: 'PUT', body: JSON.stringify(edit) }); setOpenId(null); await Promise.all([refreshMeta(), loadTracks()]) }
-    catch (e) { setErr(String(e)) } finally { setBusy(null) }
+    preserveScroll.current = window.scrollY
+    try {
+      await api(`/api/tracks/${id}`, { method: 'PUT', body: JSON.stringify(edit) })
+      const r = await api<{ matched: boolean }>(`/api/tracks/${id}/rematch`, { method: 'POST' })
+      setNote(r.matched ? 'Matched to your library → moved to Manual.' : 'Saved. No library match yet — still Pending.')
+      setOpenId(null)
+      await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
   async function loadCandidates(id: number) {
@@ -224,6 +240,7 @@ export default function App() {
   }
   async function useCandidate(id: number, path: string) {
     setBusy(`use-${id}`)
+    preserveScroll.current = window.scrollY
     try {
       await api(`/api/tracks/${id}/match`, { method: 'POST', body: JSON.stringify({ path }) })
       setOpenId(null); await Promise.all([refreshMeta(), loadTracks()])
@@ -493,9 +510,9 @@ export default function App() {
             </div>
 
             <div className="pager">
-              <button className="ghost" disabled={page <= 0} onClick={() => setPage((p) => p - 1)}>← Prev</button>
+              <button className="ghost" disabled={page <= 0} onClick={() => { preserveScroll.current = window.scrollY; setPage((p) => p - 1) }}>← Prev</button>
               <span className="muted">{tracksTotal === 0 ? '0' : `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, tracksTotal)} of ${tracksTotal}`}</span>
-              <button className="ghost" disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)}>Next →</button>
+              <button className="ghost" disabled={page + 1 >= pages} onClick={() => { preserveScroll.current = window.scrollY; setPage((p) => p + 1) }}>Next →</button>
             </div>
           </>
         )}

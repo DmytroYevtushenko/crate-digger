@@ -22,6 +22,9 @@ services:
       - SLDL_PASS=${SLDL_PASS:-}
       # Optional AcoustID key enables fingerprint verification:
       - ACOUSTID_KEY=${ACOUSTID_KEY:-}
+      # Verification tuning (optional): disable the YouTube-reference fingerprint or tune strictness.
+      - VerifyYtFingerprint=${VerifyYtFingerprint:-}
+      - VerifyBerThreshold=${VerifyBerThreshold:-}
     volumes:
       - ./data:/data
       # Your existing music library (read-only) for skip-music-dir + reconcile:

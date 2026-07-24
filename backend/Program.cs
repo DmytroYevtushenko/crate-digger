@@ -212,6 +212,9 @@ app.MapPost("/api/tracks/{id:long}/match", (long id, MatchInput m) =>
     return n > 0 ? Results.Ok(new { id, state = "Manual" }) : Results.NotFound();
 });
 
+// Re-run auto-match for one track (used right after editing its tags).
+app.MapPost("/api/tracks/{id:long}/rematch", (long id) => Results.Ok(new { matched = reconcile.RematchOne(id) }));
+
 app.MapGet("/api/cookies/status", () =>
 {
     var fi = new FileInfo(cookiesPath);
