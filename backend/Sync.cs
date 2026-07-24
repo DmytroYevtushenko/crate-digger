@@ -44,8 +44,8 @@ public sealed class SyncService(Db db, YtDlp ytdlp, ILogger<SyncService> log)
         {
             if (existing.Contains(e.Id)) continue;
             c.Execute(@"
-INSERT OR IGNORE INTO tracks (source_id, external_id, raw_title, artist, title, duration_sec, state, updated_at)
-VALUES (@sid, @eid, @raw, @artist, @title, @dur, 'Pending', datetime('now'))",
+INSERT OR IGNORE INTO tracks (source_id, external_id, raw_title, artist, title, duration_sec, state, created_at, updated_at)
+VALUES (@sid, @eid, @raw, @artist, @title, @dur, 'Pending', datetime('now'), datetime('now'))",
                 new { sid = sourceId, eid = e.Id, raw = e.Title, artist = StripTopic(e.Channel), title = e.Title, dur = e.Duration });
             added++;
         }

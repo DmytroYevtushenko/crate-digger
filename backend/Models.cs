@@ -35,6 +35,7 @@ public sealed class Track
     public string State { get; set; } = "Pending";
     public bool Enriched { get; set; }
     public string? FilePath { get; set; }
+    public string? CreatedAt { get; set; }
     public string? UpdatedAt { get; set; }
 }
 

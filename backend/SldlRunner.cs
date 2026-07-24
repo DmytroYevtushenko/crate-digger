@@ -47,11 +47,23 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
 
         int code;
         string stdout, stderr;
+        var timeoutSec = int.TryParse(cfg["SldlTimeoutSec"], out var ts) && ts > 0 ? ts : 300;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
         try
         {
-            (code, stdout, stderr) = await RunAsync(args, ct);
+            (code, stdout, stderr) = await RunAsync(args, linked.Token);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // user pressed Stop
+        }
+        catch (OperationCanceledException)
+        {
+            CleanupNew(dest, beforeAll);
+            log.LogWarning("sldl timed out after {Sec}s for '{Query}'", timeoutSec, query);
+            return new DlResult(DlOutcome.Error, null, $"timed out after {timeoutSec}s");
+        }
         catch (Exception ex)
         {
             log.LogWarning("sldl failed to start for '{Query}': {Msg}", query, ex.Message);

@@ -26,6 +26,8 @@ type Track = {
   state: string
   enriched: boolean
   filePath: string | null
+  createdAt: string | null
+  updatedAt: string | null
 }
 type LibStatus = { running: boolean; libraryFiles: number; matched: number; last: string | null }
 type CookieStatus = { present: boolean; updatedAt: string | null }
@@ -69,6 +71,20 @@ async function api<T>(path: string, opts?: RequestInit): Promise<T> {
 function fmtDur(s: number | null): string {
   if (!s) return '—'
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+// Relative age from a stored UTC timestamp ("YYYY-MM-DD HH:MM:SS").
+function relAge(s: string | null): string {
+  if (!s) return '—'
+  const t = Date.parse(s.replace(' ', 'T') + 'Z')
+  if (isNaN(t)) return '—'
+  const m = Math.max(0, Math.floor((Date.now() - t) / 60000))
+  if (m < 1) return 'now'
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  return d < 14 ? `${d}d` : `${Math.floor(d / 7)}w`
 }
 
 function qualityFromCond(cond: string | null): string {
@@ -506,6 +522,7 @@ export default function App() {
                     <th className="sortable" onClick={() => toggleSort('title')}>Track{arrow('title')}</th>
                     <th className="sortable" onClick={() => toggleSort('album')}>Album{arrow('album')}</th>
                     <th>Length</th>
+                    <th>Age</th>
                     <th className="sortable" onClick={() => toggleSort('state')}>State{arrow('state')}</th>
                     <th></th>
                   </tr>
@@ -518,6 +535,7 @@ export default function App() {
                         <td>{t.title ?? '—'}</td>
                         <td>{t.album ?? (t.enriched ? '—' : <span className="muted">…</span>)}</td>
                         <td>{fmtDur(t.durationSec)}</td>
+                        <td className="muted" title={t.createdAt ?? ''}>{relAge(t.createdAt)}</td>
                         <td><span className={`badge s-${t.state.toLowerCase()}`}>{stateLabel(t.state)}</span></td>
                         <td onClick={(e) => e.stopPropagation()}>
                           {t.state === 'Mismatch' && (
@@ -533,7 +551,7 @@ export default function App() {
                       </tr>
                       {openId === t.id && (
                         <tr className="detailrow">
-                          <td colSpan={6}>
+                          <td colSpan={7}>
                             <div className="editrow">
                               <input value={edit.artist} onChange={(e) => setEdit((f) => ({ ...f, artist: e.target.value }))} placeholder="Artist" />
                               <input value={edit.title} onChange={(e) => setEdit((f) => ({ ...f, title: e.target.value }))} placeholder="Title" />
@@ -541,6 +559,7 @@ export default function App() {
                               <button disabled={busy === `edit-${t.id}`} onClick={() => saveTrackEdit(t.id)}>Save tags</button>
                             </div>
                             <div className="muted small" style={{ marginTop: 6 }}>
+                              {t.state === 'Downloading' && <>⏳ downloading for {relAge(t.updatedAt)} · </>}
                               {t.externalId && (
                                 <a href={`https://music.youtube.com/watch?v=${t.externalId}`} target="_blank" rel="noreferrer">▶ open on YouTube</a>
                               )}

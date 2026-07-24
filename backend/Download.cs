@@ -154,7 +154,8 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
                 new { r = res.Outcome.ToString(), f = detail, id = t.Id });
         }
 
-        log.LogInformation("Track {Id} '{Artist} - {Title}' => {State}", t.Id, artist, title, state);
+        log.LogInformation("Track {Id} '{Artist} - {Title}' => {State}{Detail}", t.Id, artist, title, state,
+            string.IsNullOrEmpty(detail) ? "" : $" ({detail})");
     }
 
     private string? Quarantine(string path, Source src)

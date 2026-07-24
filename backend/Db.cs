@@ -43,6 +43,8 @@ public sealed class Db
         c.Execute(Schema);
         // Lightweight migrations: SQLite has no ADD COLUMN IF NOT EXISTS.
         TryAddColumn(c, "tracks", "enriched", "INTEGER NOT NULL DEFAULT 0");
+        TryAddColumn(c, "tracks", "created_at", "TEXT");
+        c.Execute("UPDATE tracks SET created_at=updated_at WHERE created_at IS NULL");
         TryAddColumn(c, "library_files", "mtime", "INTEGER");
         TryAddColumn(c, "library_files", "size", "INTEGER");
     }
@@ -86,6 +88,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     state            TEXT    NOT NULL DEFAULT 'Pending',
     enriched         INTEGER NOT NULL DEFAULT 0,
     file_path        TEXT,
+    created_at       TEXT,
     updated_at       TEXT    NOT NULL DEFAULT (datetime('now')),
     UNIQUE(source_id, external_id)
 );
