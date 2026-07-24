@@ -30,6 +30,7 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         var dest = src.DestDir;
         Directory.CreateDirectory(dest);
         var before = Snapshot(dest);
+        var beforeAll = AllFiles(dest);
 
         var args = new List<string> { query };
         if (!string.IsNullOrEmpty(User)) { args.Add("--user"); args.Add(User); }
@@ -61,12 +62,35 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         if (newFiles.Count > 0)
             return new DlResult(DlOutcome.Downloaded, newFiles[0], null);
 
+        // Nothing usable downloaded — remove any partial/leftover files this attempt created.
+        CleanupNew(dest, beforeAll);
+
         var low = (stdout + "\n" + stderr).ToLowerInvariant();
         if (low.Contains("already exist") || low.Contains("skipped") || low.Contains("exists in"))
             return new DlResult(DlOutcome.AlreadyExists, null, "sldl reported already present");
         if (code != 0)
             return new DlResult(DlOutcome.Error, null, $"sldl exit {code}: {Tail(stderr)}");
         return new DlResult(DlOutcome.NotFound, null, "no matching file found");
+    }
+
+    private static HashSet<string> AllFiles(string dir)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (Directory.Exists(dir))
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                set.Add(f);
+        return set;
+    }
+
+    private void CleanupNew(string dir, HashSet<string> before)
+    {
+        if (!Directory.Exists(dir)) return;
+        foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            if (before.Contains(f)) continue;
+            try { File.Delete(f); log.LogInformation("cleaned leftover {File}", f); }
+            catch (Exception ex) { log.LogWarning("cleanup failed for {File}: {Msg}", f, ex.Message); }
+        }
     }
 
     private Dictionary<string, long> Snapshot(string dir)

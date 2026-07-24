@@ -191,7 +191,8 @@ ON CONFLICT(path) DO UPDATE SET
     // ---- fuzzy text helpers ----
 
     [GeneratedRegex(@"[\(\[\{].*?[\)\]\}]")] private static partial Regex BracketRe();
-    [GeneratedRegex(@"(?i)\b(feat|ft|featuring|official|video|lyrics?|audio|remaster(ed)?|remix|hd|hq|topic)\b")] private static partial Regex NoiseRe();
+    [GeneratedRegex(@"(?i)-\s*topic\b")] private static partial Regex TopicRe();
+    [GeneratedRegex(@"(?i)\b(feat|ft|featuring|official|video|lyrics?|audio|remaster(ed)?|remix|hd|hq)\b")] private static partial Regex NoiseRe();
     [GeneratedRegex(@"\b\d{4}\b")] private static partial Regex YearRe();
 
     private static HashSet<string> Tokens(string? s)
@@ -199,6 +200,7 @@ ON CONFLICT(path) DO UPDATE SET
         var set = new HashSet<string>();
         if (string.IsNullOrEmpty(s)) return set;
         var low = s.ToLowerInvariant();
+        low = TopicRe().Replace(low, " ");   // strip the YouTube "- Topic" channel suffix (a real word "topic" is kept)
         low = BracketRe().Replace(low, " ");
         var fi = low.IndexOf(" feat", StringComparison.Ordinal);
         if (fi >= 0) low = low[..fi];
@@ -207,8 +209,14 @@ ON CONFLICT(path) DO UPDATE SET
 
         var sb = new StringBuilder();
         foreach (var ch in low) sb.Append(char.IsLetterOrDigit(ch) ? ch : ' ');
+        var compact = new StringBuilder();
         foreach (var tok in sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
             if (tok.Length > 1) set.Add(tok);
+            compact.Append(tok);
+        }
+        // Acronyms / very short titles (e.g. "S.O.S.") yield only 1-char tokens -> fall back to a compact form.
+        if (set.Count == 0 && compact.Length > 1) set.Add(compact.ToString());
         return set;
     }
 
