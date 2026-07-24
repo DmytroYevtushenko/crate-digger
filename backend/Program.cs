@@ -1,0 +1,151 @@
+using Dapper;
+using Crate.Api;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Dev frontend (vite) runs on a different origin — allow only it.
+builder.Services.AddCors(o => o.AddPolicy("dev", p => p
+    .WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
+    .AllowAnyHeader()
+    .AllowAnyMethod()));
+
+var app = builder.Build();
+
+// SQLite path: env/config "DbPath" (/data/crate.db in the container), else ./data next to the app.
+var dbPath = app.Configuration["DbPath"]
+             ?? Path.Combine(app.Environment.ContentRootPath, "data", "crate.db");
+var db = new Db(dbPath);
+db.Init();
+
+var dataDir = Path.GetDirectoryName(Path.GetFullPath(dbPath))!;
+var cookiesPath = app.Configuration["CookiesPath"] ?? Path.Combine(dataDir, "cookies.txt");
+
+var lf = app.Services.GetRequiredService<ILoggerFactory>();
+var ytdlp = new YtDlp(app.Configuration["YtDlpPath"] ?? "yt-dlp", cookiesPath);
+var sync = new SyncService(db, ytdlp, lf.CreateLogger<SyncService>());
+var sldl = new SldlRunner(app.Configuration, lf.CreateLogger<SldlRunner>());
+var verifier = new Verifier(app.Configuration, lf.CreateLogger<Verifier>());
+var tagger = new Tagger(app.Configuration, lf.CreateLogger<Tagger>());
+var downloader = new Downloader(db, ytdlp, sldl, verifier, tagger, lf.CreateLogger<Downloader>());
+var reconcile = new ReconcileService(db, app.Configuration, lf.CreateLogger<ReconcileService>());
+var scheduler = new SchedulerService(db, sync, downloader, app.Configuration, lf.CreateLogger<SchedulerService>());
+scheduler.Start(app.Lifetime.ApplicationStopping);
+
+app.UseCors("dev");
+
+// Serve the built SPA (wwwroot). In dev the folder is empty — harmless, vite serves the frontend.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "ok",
+    db = File.Exists(dbPath),
+    time = DateTimeOffset.UtcNow
+}));
+
+app.MapGet("/api/stats", () =>
+{
+    using var c = db.Open();
+    var sources = c.ExecuteScalar<long>("SELECT COUNT(*) FROM sources");
+    var tracks = c.ExecuteScalar<long>("SELECT COUNT(*) FROM tracks");
+    var byState = c.Query("SELECT state, COUNT(*) AS count FROM tracks GROUP BY state")
+        .ToDictionary(r => (string)r.state, r => (long)r.count);
+    return Results.Ok(new { sources, tracks, byState });
+});
+
+app.MapGet("/api/sources", () =>
+{
+    using var c = db.Open();
+    return Results.Ok(c.Query<Source>("SELECT * FROM sources ORDER BY id"));
+});
+
+app.MapPost("/api/sources", (SourceInput input) =>
+{
+    using var c = db.Open();
+    var id = c.ExecuteScalar<long>(@"
+INSERT INTO sources (kind, url, name, dest_dir, cond, pref, min_format, upgrade_lower_quality, schedule_cron, profile, enabled)
+VALUES (@Kind, @Url, @Name, @DestDir, @Cond, @Pref, @MinFormat, @UpgradeLowerQuality, @ScheduleCron, @Profile, 1);
+SELECT last_insert_rowid();", input);
+    return Results.Created($"/api/sources/{id}", new { id });
+});
+
+app.MapPost("/api/sources/{id:long}/sync", async (long id) =>
+{
+    var res = await sync.RunAsync(id);
+    return res.Ok ? Results.Ok(res) : Results.NotFound(new { error = res.Error });
+});
+
+// Enrich with authoritative metadata — on demand and capped (not the whole library).
+// In M3 it is applied per-track for the missing tracks right before download.
+app.MapPost("/api/sources/{id:long}/enrich", async (long id, int? limit) =>
+{
+    var n = await sync.EnrichAsync(id, Math.Clamp(limit ?? 25, 1, 500));
+    return Results.Ok(new { enriched = n });
+});
+
+app.MapPost("/api/sources/{id:long}/download", (long id, int? limit) =>
+{
+    var n = downloader.Queue(id, Math.Clamp(limit ?? 10, 1, 500), out var error);
+    return error is null
+        ? Results.Ok(new { queued = n, sldlConfigured = sldl.IsConfigured })
+        : Results.NotFound(new { error });
+});
+
+app.MapPost("/api/reconcile", () => Results.Ok(new { started = reconcile.Start(), running = reconcile.Running }));
+
+app.MapGet("/api/reconcile/status", () =>
+{
+    using var c = db.Open();
+    var files = c.ExecuteScalar<long>("SELECT COUNT(*) FROM library_files");
+    var matched = c.ExecuteScalar<long>("SELECT COUNT(*) FROM library_files WHERE matched_track_id IS NOT NULL");
+    return Results.Ok(new { running = reconcile.Running, libraryFiles = files, matched, last = reconcile.LastResult });
+});
+
+// Review-queue actions: confirm a Mismatch as OK, reject (blacklist), or retry a Failed/Mismatch.
+app.MapPost("/api/tracks/{id:long}/{action}", (long id, string action) =>
+{
+    var newState = action switch
+    {
+        "confirm" => "Verified",
+        "reject" => "Blacklisted",
+        "retry" => "Pending",
+        _ => null,
+    };
+    if (newState is null) return Results.BadRequest(new { error = "unknown action" });
+    using var c = db.Open();
+    var n = c.Execute("UPDATE tracks SET state=@s, updated_at=datetime('now') WHERE id=@id", new { s = newState, id });
+    return n > 0 ? Results.Ok(new { id, state = newState }) : Results.NotFound(new { error = "track not found" });
+});
+
+app.MapGet("/api/cookies/status", () =>
+{
+    var fi = new FileInfo(cookiesPath);
+    return Results.Ok(new { present = fi.Exists, updatedAt = fi.Exists ? fi.LastWriteTimeUtc : (DateTime?)null });
+});
+
+app.MapPost("/api/cookies", async (HttpRequest req) =>
+{
+    using var reader = new StreamReader(req.Body);
+    var content = await reader.ReadToEndAsync();
+    if (string.IsNullOrWhiteSpace(content) || !content.Contains("youtube", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = "That does not look like a YouTube cookies.txt file." });
+    Directory.CreateDirectory(dataDir);
+    await File.WriteAllTextAsync(cookiesPath, content);
+    return Results.Ok(new { present = true });
+});
+
+app.MapGet("/api/tracks", (int? limit, long? sourceId) =>
+{
+    using var c = db.Open();
+    var lim = Math.Clamp(limit ?? 200, 1, 2000);
+    var sql = sourceId is null
+        ? "SELECT * FROM tracks ORDER BY updated_at DESC LIMIT @lim"
+        : "SELECT * FROM tracks WHERE source_id=@sourceId ORDER BY updated_at DESC LIMIT @lim";
+    return Results.Ok(c.Query<Track>(sql, new { lim, sourceId }));
+});
+
+// SPA fallback — only matters when a built wwwroot/index.html exists (prod).
+app.MapFallbackToFile("index.html");
+
+app.Run();

@@ -1,0 +1,32 @@
+# Compose for deployment (e.g. Portainer). For local development use `dotnet run` + vite (see README).
+# The image is self-contained (sldl/yt-dlp/fpcalc/ffmpeg bundled); Portainer can deploy straight from the git repo.
+# Set MUSIC_LIB and INBOX (host paths) plus SLDL_USER/SLDL_PASS as stack environment variables when deploying.
+services:
+  crate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: crate:latest
+    container_name: crate
+    ports:
+      - "8080:8080"
+    environment:
+      - ASPNETCORE_URLS=http://+:8080
+      - DbPath=/data/crate.db
+      - SldlPath=/usr/local/bin/sldl
+      - MusicLibDir=/library/music
+      - SldlIndexPath=/data/sldl_index.db
+      # Soulseek credentials (set in .env or the Portainer stack env):
+      - SLDL_USER=${SLDL_USER:-}
+      - SLDL_PASS=${SLDL_PASS:-}
+      # Optional AcoustID key enables fingerprint verification:
+      - ACOUSTID_KEY=${ACOUSTID_KEY:-}
+    volumes:
+      - ./data:/data
+      # Your existing music library (read-only) for skip-music-dir + reconcile:
+      - ${MUSIC_LIB:-./music-library}:/library/music:ro
+      # Download inbox (set a source's destDir to /library/inbox in the app):
+      - ${INBOX:-./inbox}:/library/inbox
+      # Optional: use your own sldl binary instead of the bundled sockseek:
+      # - ${SLDL_BIN:-/path/to/sldl}:/usr/local/bin/sldl:ro
+    restart: unless-stopped

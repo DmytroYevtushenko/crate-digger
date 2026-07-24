@@ -1,0 +1,26 @@
+# .NET
+bin/
+obj/
+*.user
+
+# Node
+node_modules/
+dist/
+
+# App data and secrets
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# IDE
+.vs/
+.idea/
+.vscode/
+
+# Claude Code local settings
+.claude/
+
+# Local-only planning doc (kept out of the public repo)
+/PLAN.md
