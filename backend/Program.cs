@@ -17,10 +17,15 @@ var dbPath = app.Configuration["DbPath"]
 var db = new Db(dbPath);
 db.Init();
 
-// On startup no background download loop is running, so return any in-flight states to Pending —
-// otherwise a restart/redeploy mid-download leaves tracks stuck as Queued/Downloading forever.
+// Startup housekeeping.
 using (var boot = db.Open())
+{
+    // No background download loop is running yet -> return any in-flight states to Pending
+    // (otherwise a restart/redeploy mid-download leaves tracks stuck as Queued/Downloading forever).
     boot.Execute("UPDATE tracks SET state='Pending' WHERE state IN ('Queued','Downloading')");
+    // Clean the YouTube "Artist - Topic" channel suffix off already-stored artists (" - Topic" = 8 chars).
+    boot.Execute("UPDATE tracks SET artist = TRIM(SUBSTR(artist, 1, LENGTH(artist)-8)) WHERE artist LIKE '% - Topic'");
+}
 
 var dataDir = Path.GetDirectoryName(Path.GetFullPath(dbPath))!;
 var cookiesPath = app.Configuration["CookiesPath"] ?? Path.Combine(dataDir, "cookies.txt");

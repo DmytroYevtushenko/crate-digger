@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 
 namespace Crate.Api;
 
@@ -22,8 +23,7 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
 
     public async Task<DlResult> DownloadAsync(string artist, string? title, Source src, CancellationToken ct = default)
     {
-        var query = string.Join(" - ", new[] { artist, title }.Where(s => !string.IsNullOrWhiteSpace(s)))
-                          .Trim();
+        var query = string.Join(" - ", new[] { CleanQuery(artist), CleanQuery(title) }.Where(s => s.Length > 0)).Trim();
         if (string.IsNullOrWhiteSpace(query))
             return new DlResult(DlOutcome.Error, null, "empty query");
 
@@ -76,6 +76,18 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
                 tail.Length > 0 ? $"sldl exit {code}: {tail}" : $"sldl exit {code} — no match found at this quality");
         }
         return new DlResult(DlOutcome.NotFound, null, "no matching file found");
+    }
+
+    private static readonly Regex TopicRe = new(@"(?i)\s*-\s*topic\b", RegexOptions.Compiled);
+    private static readonly Regex BracketRe = new(@"\s*[\(\[\{][^)\]\}]*[\)\]\}]", RegexOptions.Compiled);
+
+    // Strip YouTube channel junk ("- Topic") and bracketed noise so the Soulseek query is clean.
+    private static string CleanQuery(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        s = TopicRe.Replace(s, " ");
+        s = BracketRe.Replace(s, " ");
+        return s.Trim().Trim('-').Trim();
     }
 
     private static HashSet<string> AllFiles(string dir)

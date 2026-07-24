@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Dapper;
 
 namespace Crate.Api;
@@ -23,6 +24,10 @@ public record SyncResult(bool Ok, string? Error, int Total, int Added);
 /// </summary>
 public sealed class SyncService(Db db, YtDlp ytdlp, ILogger<SyncService> log)
 {
+    // YouTube auto-channels are named "Artist - Topic"; store the real artist.
+    private static readonly Regex TopicRe = new(@"(?i)\s*-\s*topic\s*$", RegexOptions.Compiled);
+    private static string? StripTopic(string? s) => s is null ? null : TopicRe.Replace(s, "").Trim();
+
     public async Task<SyncResult> RunAsync(long sourceId, CancellationToken ct = default)
     {
         using var c = db.Open();
@@ -41,7 +46,7 @@ public sealed class SyncService(Db db, YtDlp ytdlp, ILogger<SyncService> log)
             c.Execute(@"
 INSERT OR IGNORE INTO tracks (source_id, external_id, raw_title, artist, title, duration_sec, state, updated_at)
 VALUES (@sid, @eid, @raw, @artist, @title, @dur, 'Pending', datetime('now'))",
-                new { sid = sourceId, eid = e.Id, raw = e.Title, artist = e.Channel, title = e.Title, dur = e.Duration });
+                new { sid = sourceId, eid = e.Id, raw = e.Title, artist = StripTopic(e.Channel), title = e.Title, dur = e.Duration });
             added++;
         }
 
