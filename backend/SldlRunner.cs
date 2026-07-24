@@ -51,6 +51,7 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         {
             (code, stdout, stderr) = await RunAsync(args, ct);
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             log.LogWarning("sldl failed to start for '{Query}': {Msg}", query, ex.Message);
@@ -121,7 +122,8 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         using var p = Process.Start(psi) ?? throw new InvalidOperationException($"cannot start {Exe}");
         var outTask = p.StandardOutput.ReadToEndAsync(ct);
         var errTask = p.StandardError.ReadToEndAsync(ct);
-        await p.WaitForExitAsync(ct);
+        try { await p.WaitForExitAsync(ct); }
+        catch (OperationCanceledException) { try { if (!p.HasExited) p.Kill(true); } catch { /* ignore */ } throw; }
         return (p.ExitCode, await outTask, await errTask);
     }
 

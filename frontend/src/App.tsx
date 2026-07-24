@@ -212,7 +212,16 @@ export default function App() {
     setBusy('rematch-all')
     try {
       const r = await api<{ matched: number }>('/api/rematch-all', { method: 'POST' })
-      setNote(`Re-matched ${r.matched} track(s) to your library → Manual.`)
+      setNote(`Re-matched ${r.matched} track(s) to your library → In library.`)
+      await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function stopDownloads() {
+    setBusy('stop')
+    try {
+      const r = await api<{ requeued: number }>('/api/downloads/stop', { method: 'POST' })
+      setNote(`Stopped — ${r.requeued} track(s) returned to Pending.`)
       await Promise.all([refreshMeta(), loadTracks()])
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
@@ -445,14 +454,27 @@ export default function App() {
       <div className="card">
         <div className="label rowbetween">
           <span>Tracks {active && <span className="muted">· updating…</span>}</span>
-          <button
-            className="mini ghost"
-            disabled={busy === 'rematch-all'}
-            onClick={rematchAll}
-            title="Re-check all Pending/Failed tracks against your library (fast, no file re-scan) — flips already-owned tracks to Manual"
-          >
-            {busy === 'rematch-all' ? '…' : 'Rematch library'}
-          </button>
+          <span>
+            {stats && (stats.byState['Queued'] ?? 0) + (stats.byState['Downloading'] ?? 0) > 0 && (
+              <button
+                className="mini danger"
+                style={{ marginRight: 6 }}
+                disabled={busy === 'stop'}
+                onClick={stopDownloads}
+                title="Cancel the download queue and return tracks to Pending"
+              >
+                {busy === 'stop' ? '…' : 'Stop downloads'}
+              </button>
+            )}
+            <button
+              className="mini ghost"
+              disabled={busy === 'rematch-all'}
+              onClick={rematchAll}
+              title="Re-check all Pending/Failed tracks against your library (fast, no file re-scan) — flips already-owned tracks to In library"
+            >
+              {busy === 'rematch-all' ? '…' : 'Rematch library'}
+            </button>
+          </span>
         </div>
 
         <div className="chips">

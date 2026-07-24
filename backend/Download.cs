@@ -7,9 +7,12 @@ namespace Crate.Api;
 /// Before downloading, enriches authoritative artist/track for a clean query.
 /// After a successful download it verifies the file inline (see Verifier).
 /// States: Queued -> Downloading -> Verified | Mismatch (quarantined) | Manual (already in lib) | Failed.
+/// Stop() cancels the running queue (kills the in-flight sldl) and returns tracks to Pending.
 /// </summary>
 public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier verifier, Tagger tagger, ILogger<Downloader> log)
 {
+    private CancellationTokenSource _cts = new();
+
     public int Queue(long sourceId, int limit, out string? error)
     {
         error = null;
@@ -23,12 +26,12 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         if (ids.Count == 0) return 0;
 
         c.Execute("UPDATE tracks SET state='Queued', updated_at=datetime('now') WHERE id IN @ids", new { ids });
-        _ = Task.Run(() => ProcessAsync(sourceId));
+        var token = _cts.Token;
+        _ = Task.Run(() => ProcessAsync(sourceId, token));
         return ids.Count;
     }
 
-    // Download a single track now, optionally overriding quality conditions (e.g. relax to "any"
-    // for a track that won't come through at FLAC). Uses the source's dest folder.
+    // Download a single track now, optionally overriding quality conditions.
     public void QueueOne(long trackId, string? cond, string? pref, out string? error)
     {
         error = null;
@@ -38,14 +41,26 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         var src = c.QuerySingleOrDefault<Source>("SELECT * FROM sources WHERE id=@id", new { id = t.SourceId });
         if (src is null) { error = "source not found"; return; }
 
-        if (cond is not null) src.Cond = cond;   // "" => no hard conditions (accept anything)
+        if (cond is not null) src.Cond = cond;
         if (!string.IsNullOrWhiteSpace(pref)) src.Pref = pref;
 
         c.Execute("UPDATE tracks SET state='Queued', updated_at=datetime('now') WHERE id=@id", new { id = trackId });
-        _ = Task.Run(() => DownloadOneAsync(src, t));
+        var token = _cts.Token;
+        _ = Task.Run(() => DownloadOneAsync(src, t, token));
     }
 
-    private async Task ProcessAsync(long sourceId)
+    // Cancel the running queue and return queued/in-flight tracks to Pending. Returns how many were requeued.
+    public int Stop()
+    {
+        _cts.Cancel();
+        _cts = new CancellationTokenSource();
+        using var c = db.Open();
+        var n = c.Execute("UPDATE tracks SET state='Pending', updated_at=datetime('now') WHERE state IN ('Queued','Downloading')");
+        log.LogInformation("Downloads stopped, {N} track(s) returned to Pending", n);
+        return n;
+    }
+
+    private async Task ProcessAsync(long sourceId, CancellationToken ct)
     {
         try
         {
@@ -59,16 +74,18 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
                     new { id = sourceId }).ToList();
             }
             foreach (var t in queued)
-                await DownloadOneAsync(src, t);
+            {
+                if (ct.IsCancellationRequested) break;
+                await DownloadOneAsync(src, t, ct);
+            }
         }
-        catch (Exception ex)
-        {
-            log.LogError(ex, "download batch failed for source {Id}", sourceId);
-        }
+        catch (OperationCanceledException) { log.LogInformation("download batch cancelled for source {Id}", sourceId); }
+        catch (Exception ex) { log.LogError(ex, "download batch failed for source {Id}", sourceId); }
     }
 
-    private async Task DownloadOneAsync(Source src, Track t)
+    private async Task DownloadOneAsync(Source src, Track t, CancellationToken ct)
     {
+        if (ct.IsCancellationRequested) return;
         SetState(t.Id, "Downloading");
 
         var artist = t.Artist;
@@ -79,7 +96,7 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         {
             try
             {
-                var m = await ytdlp.GetMetaAsync(t.ExternalId);
+                var m = await ytdlp.GetMetaAsync(t.ExternalId, ct);
                 if (m is not null)
                 {
                     artist = m.Artist ?? artist;
@@ -88,21 +105,17 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
                     c.Execute(@"UPDATE tracks SET artist=COALESCE(@a,artist), title=COALESCE(@t,title),
                                 album=@al, duration_sec=COALESCE(@d,duration_sec), enriched=1 WHERE id=@id",
                         new { a = m.Artist, t = m.Track, al = m.Album, d = m.Duration, id = t.Id });
-                    // reflect enriched values for verification below
-                    t.Artist = artist; t.Title = title;
-                    t.Album = m.Album; t.DurationSec = m.Duration ?? t.DurationSec;
+                    t.Artist = artist; t.Title = title; t.Album = m.Album; t.DurationSec = m.Duration ?? t.DurationSec;
                 }
             }
-            catch (Exception ex)
-            {
-                log.LogWarning("enrich-on-download failed {Ext}: {Msg}", t.ExternalId, ex.Message);
-            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { log.LogWarning("enrich-on-download failed {Ext}: {Msg}", t.ExternalId, ex.Message); }
         }
 
         using (var c = db.Open())
             c.Execute("INSERT INTO download_attempts(track_id, started_at) VALUES(@id, datetime('now'))", new { id = t.Id });
 
-        var res = await sldl.DownloadAsync(artist ?? "", title, src);
+        var res = await sldl.DownloadAsync(artist ?? "", title, src, ct);
 
         string state;
         var finalPath = res.Path;
@@ -111,7 +124,7 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         switch (res.Outcome)
         {
             case DlOutcome.Downloaded:
-                var v = await verifier.VerifyAsync(res.Path!, t);
+                var v = await verifier.VerifyAsync(res.Path!, t, ct);
                 detail = v.Detail;
                 if (v.Outcome == VerifyOutcome.Mismatch)
                 {
@@ -121,7 +134,7 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
                 else
                 {
                     state = "Verified";
-                    await tagger.TagAsync(res.Path!, t); // Picard-lite: write clean tags into the file
+                    await tagger.TagAsync(res.Path!, t, ct); // Picard-lite: write clean tags into the file
                 }
                 break;
             case DlOutcome.AlreadyExists:
@@ -141,10 +154,9 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
                 new { r = res.Outcome.ToString(), f = detail, id = t.Id });
         }
 
-        log.LogInformation("Track {Id} '{Artist} - {Title}' => {State} ({Detail})", t.Id, artist, title, state, detail);
+        log.LogInformation("Track {Id} '{Artist} - {Title}' => {State}", t.Id, artist, title, state);
     }
 
-    // Move a mismatched file out of the inbox into <dest>/_mismatch so it isn't mistaken for a good download.
     private string? Quarantine(string path, Source src)
     {
         try

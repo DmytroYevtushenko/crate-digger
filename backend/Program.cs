@@ -17,6 +17,11 @@ var dbPath = app.Configuration["DbPath"]
 var db = new Db(dbPath);
 db.Init();
 
+// On startup no background download loop is running, so return any in-flight states to Pending —
+// otherwise a restart/redeploy mid-download leaves tracks stuck as Queued/Downloading forever.
+using (var boot = db.Open())
+    boot.Execute("UPDATE tracks SET state='Pending' WHERE state IN ('Queued','Downloading')");
+
 var dataDir = Path.GetDirectoryName(Path.GetFullPath(dbPath))!;
 var cookiesPath = app.Configuration["CookiesPath"] ?? Path.Combine(dataDir, "cookies.txt");
 
@@ -217,6 +222,9 @@ app.MapPost("/api/tracks/{id:long}/rematch", (long id) => Results.Ok(new { match
 
 // Re-run matching for all Pending/Failed tracks against the current library index (fast, no file scan).
 app.MapPost("/api/rematch-all", () => Results.Ok(new { matched = reconcile.RematchAll() }));
+
+// Cancel the running download queue and return in-flight tracks to Pending.
+app.MapPost("/api/downloads/stop", () => Results.Ok(new { requeued = downloader.Stop() }));
 
 // Download a single track now, optionally overriding quality (e.g. relax to "any" for a stuck track).
 app.MapPost("/api/tracks/{id:long}/download", (long id, DlOverride? o) =>
