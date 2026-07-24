@@ -27,6 +27,24 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         return ids.Count;
     }
 
+    // Download a single track now, optionally overriding quality conditions (e.g. relax to "any"
+    // for a track that won't come through at FLAC). Uses the source's dest folder.
+    public void QueueOne(long trackId, string? cond, string? pref, out string? error)
+    {
+        error = null;
+        using var c = db.Open();
+        var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
+        if (t is null) { error = "track not found"; return; }
+        var src = c.QuerySingleOrDefault<Source>("SELECT * FROM sources WHERE id=@id", new { id = t.SourceId });
+        if (src is null) { error = "source not found"; return; }
+
+        if (cond is not null) src.Cond = cond;   // "" => no hard conditions (accept anything)
+        if (!string.IsNullOrWhiteSpace(pref)) src.Pref = pref;
+
+        c.Execute("UPDATE tracks SET state='Queued', updated_at=datetime('now') WHERE id=@id", new { id = trackId });
+        _ = Task.Run(() => DownloadOneAsync(src, t));
+    }
+
     private async Task ProcessAsync(long sourceId)
     {
         try

@@ -215,6 +215,13 @@ app.MapPost("/api/tracks/{id:long}/match", (long id, MatchInput m) =>
 // Re-run auto-match for one track (used right after editing its tags).
 app.MapPost("/api/tracks/{id:long}/rematch", (long id) => Results.Ok(new { matched = reconcile.RematchOne(id) }));
 
+// Download a single track now, optionally overriding quality (e.g. relax to "any" for a stuck track).
+app.MapPost("/api/tracks/{id:long}/download", (long id, DlOverride? o) =>
+{
+    downloader.QueueOne(id, o?.Cond, o?.Pref, out var error);
+    return error is null ? Results.Ok(new { queued = 1, sldlConfigured = sldl.IsConfigured }) : Results.NotFound(new { error });
+});
+
 app.MapGet("/api/cookies/status", () =>
 {
     var fi = new FileInfo(cookiesPath);

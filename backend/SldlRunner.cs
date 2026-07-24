@@ -34,7 +34,7 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         var args = new List<string> { query };
         if (!string.IsNullOrEmpty(User)) { args.Add("--user"); args.Add(User); }
         if (!string.IsNullOrEmpty(Pass)) { args.Add("--pass"); args.Add(Pass); }
-        args.Add("--pref-format"); args.Add("flac");
+        args.Add("--pref-format"); args.Add(string.IsNullOrWhiteSpace(src.Pref) ? "flac" : src.Pref!);
         if (!string.IsNullOrWhiteSpace(src.Cond)) { args.Add("--cond"); args.Add(src.Cond!); args.Add("--strict-conditions"); }
         args.Add("--length-tol"); args.Add("5");
         args.Add("--remove-ft");

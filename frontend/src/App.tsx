@@ -94,6 +94,7 @@ export default function App() {
   const [detail, setDetail] = useState<Attempt | null>(null)
   const [cands, setCands] = useState<Cand[]>([])
   const preserveScroll = useRef<number | null>(null)
+  const [retryQuality, setRetryQuality] = useState('any')
 
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -244,6 +245,20 @@ export default function App() {
     try {
       await api(`/api/tracks/${id}/match`, { method: 'POST', body: JSON.stringify({ path }) })
       setOpenId(null); await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function retryDownload(id: number) {
+    setBusy(`dl1-${id}`)
+    preserveScroll.current = window.scrollY
+    try {
+      const Q = QUALITY[retryQuality]
+      const res = await api<{ sldlConfigured?: boolean }>(`/api/tracks/${id}/download`, {
+        method: 'POST',
+        body: JSON.stringify({ cond: Q?.cond ?? '', pref: Q?.pref ?? 'flac' }),
+      })
+      if (res.sldlConfigured === false) setNote('sldl has no Soulseek credentials — real downloads will not run.')
+      await Promise.all([refreshMeta(), loadTracks()])
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
@@ -479,9 +494,16 @@ export default function App() {
                             {t.filePath && (
                               <audio className="player" controls preload="none" src={audioUrl(t.filePath)} />
                             )}
-                            <div style={{ marginTop: 8 }}>
+                            <div className="detailbar">
                               <button className="mini" disabled={busy === `cand-${t.id}`} onClick={() => loadCandidates(t.id)}>
                                 {busy === `cand-${t.id}` ? '…' : 'Find in library'}
+                              </button>
+                              <span className="muted small">retry at</span>
+                              <select value={retryQuality} onChange={(e) => setRetryQuality(e.target.value)} title="Quality for this retry">
+                                {Object.entries(QUALITY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                              </select>
+                              <button className="mini" disabled={busy === `dl1-${t.id}`} onClick={() => retryDownload(t.id)} title="Try downloading just this track now, at the chosen quality">
+                                {busy === `dl1-${t.id}` ? '…' : 'Retry download'}
                               </button>
                             </div>
                             {cands.length > 0 && (
