@@ -69,7 +69,11 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         if (low.Contains("already exist") || low.Contains("skipped") || low.Contains("exists in"))
             return new DlResult(DlOutcome.AlreadyExists, null, "sldl reported already present");
         if (code != 0)
-            return new DlResult(DlOutcome.Error, null, $"sldl exit {code}: {Tail(stderr)}");
+        {
+            var tail = Tail(stdout + "\n" + stderr);
+            return new DlResult(DlOutcome.Error, null,
+                tail.Length > 0 ? $"sldl exit {code}: {tail}" : $"sldl exit {code} — no match found at this quality");
+        }
         return new DlResult(DlOutcome.NotFound, null, "no matching file found");
     }
 
