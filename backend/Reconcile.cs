@@ -79,7 +79,7 @@ ON CONFLICT(path) DO UPDATE SET
     private int Match()
     {
         using var c = db.Open();
-        var files = c.Query<LibraryFile>("SELECT * FROM library_files WHERE matched_track_id IS NULL").ToList();
+        var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
         var tracks = c.Query<Track>("SELECT * FROM tracks WHERE state IN ('Pending','Failed')").ToList();
 
         var profiles = files
