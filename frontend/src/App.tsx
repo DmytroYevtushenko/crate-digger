@@ -54,6 +54,10 @@ const SCHEDULES: { label: string; cron: string }[] = [
   { label: 'Weekly (Sun 03:00)', cron: '0 3 * * 0' },
 ]
 
+// Display labels for states (internal value stays the same).
+const STATE_LABELS: Record<string, string> = { Manual: 'In library' }
+const stateLabel = (s: string) => STATE_LABELS[s] ?? s
+
 const PAGE_SIZE = 50
 
 async function api<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -454,7 +458,7 @@ export default function App() {
         <div className="chips">
           <button className={`chip ${filter === '' ? 'on' : ''}`} onClick={() => { setFilter(''); setPage(0) }}>All {stats?.tracks ?? 0}</button>
           {stats && Object.entries(stats.byState).map(([s, n]) => (
-            <button key={s} className={`chip ${filter === s ? 'on' : ''}`} onClick={() => { setFilter(s); setPage(0) }}>{s} {n}</button>
+            <button key={s} className={`chip ${filter === s ? 'on' : ''}`} onClick={() => { setFilter(s); setPage(0) }}>{stateLabel(s)} {n}</button>
           ))}
         </div>
 
@@ -492,7 +496,7 @@ export default function App() {
                         <td>{t.title ?? '—'}</td>
                         <td>{t.album ?? (t.enriched ? '—' : <span className="muted">…</span>)}</td>
                         <td>{fmtDur(t.durationSec)}</td>
-                        <td><span className={`badge s-${t.state.toLowerCase()}`}>{t.state}</span></td>
+                        <td><span className={`badge s-${t.state.toLowerCase()}`}>{stateLabel(t.state)}</span></td>
                         <td onClick={(e) => e.stopPropagation()}>
                           {t.state === 'Mismatch' && (
                             <>
