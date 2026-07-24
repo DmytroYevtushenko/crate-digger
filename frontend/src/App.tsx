@@ -102,6 +102,7 @@ export default function App() {
   const [form, setForm] = useState({ name: '', url: '', destDir: '/library/inbox', quality: 'flac', schedule: '' })
   const [editing, setEditing] = useState<number | null>(null)
   const [editForm, setEditForm] = useState<EditForm>({ name: '', url: '', destDir: '', quality: 'flac', schedule: '', enabled: true })
+  const [confirmDel, setConfirmDel] = useState<number | null>(null)
 
   const refreshMeta = useCallback(async () => {
     try {
@@ -203,6 +204,15 @@ export default function App() {
     catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
+  async function rematchAll() {
+    setBusy('rematch-all')
+    try {
+      const r = await api<{ matched: number }>('/api/rematch-all', { method: 'POST' })
+      setNote(`Re-matched ${r.matched} track(s) to your library → Manual.`)
+      await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
   async function trackAction(id: number, action: 'confirm' | 'reject' | 'retry') {
     setBusy(`t-${action}-${id}`)
     preserveScroll.current = window.scrollY
@@ -284,10 +294,13 @@ export default function App() {
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
   async function deleteSource(id: number) {
-    if (!confirm('Delete this source? Tracks stay in the DB.')) return
     setBusy(`del-${id}`)
-    try { await api(`/api/sources/${id}`, { method: 'DELETE' }); if (editing === id) setEditing(null); await refreshMeta() }
-    catch (e) { setErr(String(e)) } finally { setBusy(null) }
+    try {
+      await api(`/api/sources/${id}`, { method: 'DELETE' })
+      if (editing === id) setEditing(null)
+      setConfirmDel(null)
+      await refreshMeta()
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
   async function onCookieFile(e: ChangeEvent<HTMLInputElement>) {
@@ -408,7 +421,14 @@ export default function App() {
                       <button className="ghost" title="Requeue all Failed tracks" disabled={busy === `bulk-retry-failed-${s.id}`} onClick={() => bulk(s.id, 'retry-failed')}>↻ failed</button>
                       <button className="ghost" title="Fetch clean metadata for up to 50 tracks" disabled={busy === `enrich-${s.id}`} onClick={() => run(s.id, 'enrich')}>{busy === `enrich-${s.id}` ? '…' : 'Enrich ×50'}</button>
                       <button className="ghost" title="Edit source" onClick={() => startEdit(s)}>Edit</button>
-                      <button className="ghost" title="Delete source" onClick={() => deleteSource(s.id)}>✕</button>
+                      {confirmDel === s.id ? (
+                        <>
+                          <button className="danger" disabled={busy === `del-${s.id}`} title="Confirm delete" onClick={() => deleteSource(s.id)}>Delete?</button>
+                          <button className="ghost" title="Cancel" onClick={() => setConfirmDel(null)}>Cancel</button>
+                        </>
+                      ) : (
+                        <button className="ghost" title="Delete source" onClick={() => setConfirmDel(s.id)}>✕</button>
+                      )}
                     </div>
                   </>
                 )}
@@ -419,7 +439,17 @@ export default function App() {
       )}
 
       <div className="card">
-        <div className="label">Tracks {active && <span className="muted">· updating…</span>}</div>
+        <div className="label rowbetween">
+          <span>Tracks {active && <span className="muted">· updating…</span>}</span>
+          <button
+            className="mini ghost"
+            disabled={busy === 'rematch-all'}
+            onClick={rematchAll}
+            title="Re-check all Pending/Failed tracks against your library (fast, no file re-scan) — flips already-owned tracks to Manual"
+          >
+            {busy === 'rematch-all' ? '…' : 'Rematch library'}
+          </button>
+        </div>
 
         <div className="chips">
           <button className={`chip ${filter === '' ? 'on' : ''}`} onClick={() => { setFilter(''); setPage(0) }}>All {stats?.tracks ?? 0}</button>

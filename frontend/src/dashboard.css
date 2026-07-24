@@ -181,7 +181,9 @@ td:nth-child(2) { white-space: normal; }
 th.sortable { cursor: pointer; user-select: none; }
 tr.trow { cursor: pointer; }
 tr.trow:hover td { background: rgba(127, 127, 127, 0.06); }
-tr.detailrow td { background: rgba(127, 127, 127, 0.05); }
+tr.detailrow td { background: rgba(127, 127, 127, 0.05); white-space: normal; }
+.label.rowbetween { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+button.danger { background: var(--bad); color: #fff; }
 .editrow { display: flex; gap: 6px; flex-wrap: wrap; }
 .editrow input {
   flex: 1 1 140px;
@@ -191,7 +193,8 @@ tr.detailrow td { background: rgba(127, 127, 127, 0.05); }
   color: var(--text);
   padding: 6px 8px;
 }
-.player { width: 100%; margin-top: 8px; height: 34px; }
+.player { width: 100%; max-width: 100%; box-sizing: border-box; margin-top: 8px; height: 34px; }
+.cands li .small { white-space: normal; word-break: break-word; }
 .detailbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .detailbar select { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 4px 6px; font-size: 12px; }
 .cands { list-style: none; margin: 8px 0 0; padding: 0; }

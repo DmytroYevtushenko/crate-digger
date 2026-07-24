@@ -143,6 +143,9 @@ ON CONFLICT(path) DO UPDATE SET
             .ToList();
     }
 
+    // Re-run matching for ALL Pending/Failed tracks against the current library index (no file re-scan).
+    public int RematchAll() => Match();
+
     // Re-run the auto-match for a single track (e.g. right after the user fixed its tags).
     // Returns true if it matched a library file and moved the track to Manual.
     public bool RematchOne(long trackId)

@@ -215,6 +215,9 @@ app.MapPost("/api/tracks/{id:long}/match", (long id, MatchInput m) =>
 // Re-run auto-match for one track (used right after editing its tags).
 app.MapPost("/api/tracks/{id:long}/rematch", (long id) => Results.Ok(new { matched = reconcile.RematchOne(id) }));
 
+// Re-run matching for all Pending/Failed tracks against the current library index (fast, no file scan).
+app.MapPost("/api/rematch-all", () => Results.Ok(new { matched = reconcile.RematchAll() }));
+
 // Download a single track now, optionally overriding quality (e.g. relax to "any" for a stuck track).
 app.MapPost("/api/tracks/{id:long}/download", (long id, DlOverride? o) =>
 {
