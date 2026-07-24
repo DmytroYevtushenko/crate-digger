@@ -12,7 +12,8 @@ public record SourceInput(
     string? MinFormat = null,
     bool UpgradeLowerQuality = false,
     string? ScheduleCron = null,
-    string? Profile = null);
+    string? Profile = null,
+    bool Enabled = true);
 
 public record SyncResult(bool Ok, string? Error, int Total, int Added);
 

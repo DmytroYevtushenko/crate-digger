@@ -65,9 +65,30 @@ app.MapPost("/api/sources", (SourceInput input) =>
     using var c = db.Open();
     var id = c.ExecuteScalar<long>(@"
 INSERT INTO sources (kind, url, name, dest_dir, cond, pref, min_format, upgrade_lower_quality, schedule_cron, profile, enabled)
-VALUES (@Kind, @Url, @Name, @DestDir, @Cond, @Pref, @MinFormat, @UpgradeLowerQuality, @ScheduleCron, @Profile, 1);
+VALUES (@Kind, @Url, @Name, @DestDir, @Cond, @Pref, @MinFormat, @UpgradeLowerQuality, @ScheduleCron, @Profile, @Enabled);
 SELECT last_insert_rowid();", input);
     return Results.Created($"/api/sources/{id}", new { id });
+});
+
+app.MapPut("/api/sources/{id:long}", (long id, SourceInput input) =>
+{
+    using var c = db.Open();
+    var n = c.Execute(@"
+UPDATE sources SET
+    name=@Name, url=@Url, dest_dir=@DestDir, cond=@Cond, pref=@Pref,
+    min_format=@MinFormat, upgrade_lower_quality=@UpgradeLowerQuality,
+    schedule_cron=@ScheduleCron, profile=@Profile, enabled=@Enabled
+WHERE id=@id",
+        new { input.Name, input.Url, input.DestDir, input.Cond, input.Pref, input.MinFormat,
+              input.UpgradeLowerQuality, input.ScheduleCron, input.Profile, input.Enabled, id });
+    return n > 0 ? Results.Ok(new { id }) : Results.NotFound(new { error = "source not found" });
+});
+
+app.MapDelete("/api/sources/{id:long}", (long id) =>
+{
+    using var c = db.Open();
+    var n = c.Execute("DELETE FROM sources WHERE id=@id", new { id });
+    return n > 0 ? Results.Ok(new { id }) : Results.NotFound(new { error = "source not found" });
 });
 
 app.MapPost("/api/sources/{id:long}/sync", async (long id) =>
@@ -135,14 +156,23 @@ app.MapPost("/api/cookies", async (HttpRequest req) =>
     return Results.Ok(new { present = true });
 });
 
-app.MapGet("/api/tracks", (int? limit, long? sourceId) =>
+app.MapGet("/api/tracks", (int? limit, int? offset, long? sourceId, string? state, string? q) =>
 {
     using var c = db.Open();
-    var lim = Math.Clamp(limit ?? 200, 1, 2000);
-    var sql = sourceId is null
-        ? "SELECT * FROM tracks ORDER BY updated_at DESC LIMIT @lim"
-        : "SELECT * FROM tracks WHERE source_id=@sourceId ORDER BY updated_at DESC LIMIT @lim";
-    return Results.Ok(c.Query<Track>(sql, new { lim, sourceId }));
+    var lim = Math.Clamp(limit ?? 50, 1, 500);
+    var off = Math.Max(offset ?? 0, 0);
+
+    var where = new List<string>();
+    if (sourceId is not null) where.Add("source_id=@sourceId");
+    if (!string.IsNullOrWhiteSpace(state)) where.Add("state=@state");
+    if (!string.IsNullOrWhiteSpace(q)) where.Add("(artist LIKE @q OR title LIKE @q OR album LIKE @q)");
+    var wsql = where.Count > 0 ? "WHERE " + string.Join(" AND ", where) : "";
+    var pars = new { sourceId, state, q = "%" + (q ?? "") + "%", lim, off };
+
+    var total = c.ExecuteScalar<long>($"SELECT COUNT(*) FROM tracks {wsql}", pars);
+    var items = c.Query<Track>(
+        $"SELECT * FROM tracks {wsql} ORDER BY updated_at DESC LIMIT @lim OFFSET @off", pars);
+    return Results.Ok(new { total, items });
 });
 
 // SPA fallback — only matters when a built wwwroot/index.html exists (prod).

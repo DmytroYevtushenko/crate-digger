@@ -131,6 +131,43 @@ td:nth-child(2) { white-space: normal; }
 .mini { padding: 3px 8px; font-size: 12px; margin-right: 4px; }
 .badge.s-blacklisted { background: #2a2a2a; color: #9aa2ad; }
 
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.chip {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chip.on { background: var(--accent); color: #05121f; border-color: var(--accent); }
+
+.search {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 12px; }
+
+.editform { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
+.editform input, .editform select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 8px;
+  flex: 1 1 120px;
+}
+.chk { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); flex: 0 0 auto; }
+.chk input { flex: 0; }
+
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f6f7f9;
