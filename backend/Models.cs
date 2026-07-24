@@ -39,6 +39,7 @@ public sealed class Track
 }
 
 public record TrackEdit(string? Artist, string? Title, string? Album);
+public record MatchInput(string Path);
 
 public sealed class LibraryFile
 {

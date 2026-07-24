@@ -117,6 +117,32 @@ ON CONFLICT(path) DO UPDATE SET
         return matched;
     }
 
+    // Fuzzy library candidates for a track (below the auto-match threshold) — for manual pick in the UI.
+    public List<object> Candidates(long trackId, int top = 8)
+    {
+        using var c = db.Open();
+        var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
+        if (t is null) return new List<object>();
+        var tTitle = Tokens(t.Title ?? t.RawTitle);
+        var tArtist = Tokens(t.Artist);
+        var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
+        return files
+            .Select(f =>
+            {
+                var tj = Jaccard(tTitle, Tokens(f.Title));
+                var aj = Jaccard(tArtist, Tokens(f.Artist));
+                var durClose = t.DurationSec is not null && f.DurationSec is not null
+                               && Math.Abs(t.DurationSec.Value - f.DurationSec.Value) <= 10;
+                var score = Math.Round(tj * 0.7 + aj * 0.3 + (durClose ? 0.1 : 0), 3);
+                return new { f.Path, f.Artist, f.Title, f.DurationSec, score };
+            })
+            .Where(x => x.score >= 0.15)
+            .OrderByDescending(x => x.score)
+            .Take(top)
+            .Cast<object>()
+            .ToList();
+    }
+
     private IEnumerable<string> Roots()
     {
         var roots = new List<string>();

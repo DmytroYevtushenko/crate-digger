@@ -170,6 +170,48 @@ app.MapPost("/api/sources/{id:long}/retry-failed", (long id) =>
     return Results.Ok(new { requeued = n });
 });
 
+List<string> AllowedRoots()
+{
+    var roots = new List<string>();
+    if (app.Configuration["MusicLibDir"] is { Length: > 0 } lib) roots.Add(Path.GetFullPath(lib));
+    using var cc = db.Open();
+    roots.AddRange(cc.Query<string>("SELECT DISTINCT dest_dir FROM sources WHERE dest_dir IS NOT NULL")
+        .Where(d => !string.IsNullOrWhiteSpace(d)).Select(Path.GetFullPath));
+    return roots;
+}
+static string AudioCt(string p) => Path.GetExtension(p).ToLowerInvariant() switch
+{
+    ".flac" => "audio/flac",
+    ".mp3" => "audio/mpeg",
+    ".m4a" => "audio/mp4",
+    ".ogg" or ".opus" => "audio/ogg",
+    ".wav" => "audio/wav",
+    _ => "application/octet-stream",
+};
+
+// Stream an audio file for in-browser playback — only files under the library/inbox roots.
+app.MapGet("/api/audio", (string path) =>
+{
+    string full;
+    try { full = Path.GetFullPath(path); } catch { return Results.BadRequest(); }
+    var ok = AllowedRoots().Any(r => full == r || full.StartsWith(r + Path.DirectorySeparatorChar, StringComparison.Ordinal));
+    if (!ok || !File.Exists(full)) return Results.NotFound();
+    return Results.File(full, AudioCt(full), enableRangeProcessing: true);
+});
+
+// Fuzzy library candidates for a track (for the manual "find in library" picker).
+app.MapGet("/api/tracks/{id:long}/candidates", (long id) => Results.Ok(reconcile.Candidates(id)));
+
+// Manually link a track to a chosen library file (moves it to Manual).
+app.MapPost("/api/tracks/{id:long}/match", (long id, MatchInput m) =>
+{
+    if (string.IsNullOrWhiteSpace(m.Path)) return Results.BadRequest(new { error = "path required" });
+    using var c = db.Open();
+    var n = c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = m.Path, id });
+    c.Execute("UPDATE library_files SET matched_track_id=@id WHERE path=@p", new { id, p = m.Path });
+    return n > 0 ? Results.Ok(new { id, state = "Manual" }) : Results.NotFound();
+});
+
 app.MapGet("/api/cookies/status", () =>
 {
     var fi = new FileInfo(cookiesPath);

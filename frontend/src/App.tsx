@@ -31,6 +31,11 @@ type LibStatus = { running: boolean; libraryFiles: number; matched: number; last
 type CookieStatus = { present: boolean; updatedAt: string | null }
 type TracksPage = { total: number; items: Track[] }
 type Attempt = { result?: string; failure_reason?: string; finished_at?: string }
+type Cand = { path: string; artist: string | null; title: string | null; durationSec: number | null; score: number }
+
+function audioUrl(path: string): string {
+  return `/api/audio?path=${encodeURIComponent(path)}`
+}
 
 const QUALITY: Record<string, { label: string; cond: string; pref: string }> = {
   flac: { label: 'FLAC (lossless)', cond: 'format == flac, bitrate >= 600', pref: 'flac' },
@@ -87,6 +92,7 @@ export default function App() {
   const [openId, setOpenId] = useState<number | null>(null)
   const [edit, setEdit] = useState({ artist: '', title: '', album: '' })
   const [detail, setDetail] = useState<Attempt | null>(null)
+  const [cands, setCands] = useState<Cand[]>([])
 
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -198,6 +204,7 @@ export default function App() {
     setOpenId(t.id)
     setEdit({ artist: t.artist ?? '', title: t.title ?? '', album: t.album ?? '' })
     setDetail(null)
+    setCands([])
     try {
       const d = await api<{ lastAttempt: Attempt | null }>(`/api/tracks/${t.id}`)
       setDetail(d.lastAttempt)
@@ -208,6 +215,19 @@ export default function App() {
     setBusy(`edit-${id}`)
     try { await api(`/api/tracks/${id}`, { method: 'PUT', body: JSON.stringify(edit) }); setOpenId(null); await Promise.all([refreshMeta(), loadTracks()]) }
     catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function loadCandidates(id: number) {
+    setBusy(`cand-${id}`)
+    try { setCands(await api<Cand[]>(`/api/tracks/${id}/candidates`)) }
+    catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+  async function useCandidate(id: number, path: string) {
+    setBusy(`use-${id}`)
+    try {
+      await api(`/api/tracks/${id}/match`, { method: 'POST', body: JSON.stringify({ path }) })
+      setOpenId(null); await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
   function toggleSort(col: string) { setSort((s) => (s === col ? '' : col)); setPage(0) }
@@ -439,6 +459,30 @@ export default function App() {
                               {t.filePath && <> · file: <code>{t.filePath}</code></>}
                               {detail?.failure_reason && <> · last error: {detail.failure_reason}</>}
                             </div>
+                            {t.filePath && (
+                              <audio className="player" controls preload="none" src={audioUrl(t.filePath)} />
+                            )}
+                            <div style={{ marginTop: 8 }}>
+                              <button className="mini" disabled={busy === `cand-${t.id}`} onClick={() => loadCandidates(t.id)}>
+                                {busy === `cand-${t.id}` ? '…' : 'Find in library'}
+                              </button>
+                            </div>
+                            {cands.length > 0 && (
+                              <ul className="cands">
+                                {cands.map((cnd) => (
+                                  <li key={cnd.path}>
+                                    <div className="small">
+                                      <b>{cnd.artist ?? '—'}</b> — {cnd.title ?? '—'}{' '}
+                                      <span className="muted">({fmtDur(cnd.durationSec)} · score {cnd.score})</span>
+                                    </div>
+                                    <audio className="player" controls preload="none" src={audioUrl(cnd.path)} />
+                                    <button className="mini" disabled={busy === `use-${t.id}`} onClick={() => useCandidate(t.id, cnd.path)}>
+                                      Use this
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
                           </td>
                         </tr>
                       )}
