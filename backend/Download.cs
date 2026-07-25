@@ -115,7 +115,7 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         using (var c = db.Open())
             c.Execute("INSERT INTO download_attempts(track_id, started_at) VALUES(@id, datetime('now'))", new { id = t.Id });
 
-        var res = await sldl.DownloadAsync(artist ?? "", title, src, ct);
+        var res = await sldl.DownloadAsync(artist ?? "", title, t.ExpectedLenSec ?? t.DurationSec, src, ct);
 
         string state;
         var finalPath = res.Path;

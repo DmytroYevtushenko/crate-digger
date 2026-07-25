@@ -7,37 +7,50 @@ public enum DlOutcome { Downloaded, AlreadyExists, NotFound, Error }
 public record DlResult(DlOutcome Outcome, string? Path, string? Detail);
 
 /// <summary>
-/// Runs sldl as a subprocess for ONE track. Success is detected reliably and version-independently:
-/// snapshot the audio files in dest BEFORE and AFTER the run — a new file means it downloaded.
-/// stdout is also scanned for "already exists / skipped" and "not found" markers.
-/// The password comes from configuration (env SLDL_PASS) and is NEVER logged.
+/// Runs sldl as a subprocess for ONE track. Instead of a loose search string (which grabs the wrong
+/// song), it feeds sldl a one-row CSV with Artist/Title/Length so sldl can match by artist + title +
+/// length (--length-tol) and reject wrong recordings (--strict-artist).
+/// Success is detected version-independently: a new audio file appearing in dest.
+/// The password comes from config (env SLDL_PASS) and is NEVER logged.
 /// </summary>
 public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
 {
     private static readonly string[] AudioExt = [".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"];
+    private static readonly Regex TopicRe = new(@"(?i)\s*-\s*topic\b", RegexOptions.Compiled);
+    private static readonly Regex BracketRe = new(@"\s*[\(\[\{][^)\]\}]*[\)\]\}]", RegexOptions.Compiled);
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(User) && !string.IsNullOrWhiteSpace(Pass);
     private string Exe => cfg["SldlPath"] ?? "sldl";
     private string? User => cfg["SLDL_USER"];
     private string? Pass => cfg["SLDL_PASS"];
 
-    public async Task<DlResult> DownloadAsync(string artist, string? title, Source src, CancellationToken ct = default)
+    public async Task<DlResult> DownloadAsync(string artist, string? title, int? lengthSec, Source src, CancellationToken ct = default)
     {
-        var query = string.Join(" - ", new[] { CleanQuery(artist), CleanQuery(title) }.Where(s => s.Length > 0)).Trim();
-        if (string.IsNullOrWhiteSpace(query))
+        var qArtist = CleanQuery(artist);
+        var qTitle = CleanQuery(title);
+        if (qArtist.Length == 0 && qTitle.Length == 0)
             return new DlResult(DlOutcome.Error, null, "empty query");
+        var label = string.Join(" - ", new[] { qArtist, qTitle }.Where(s => s.Length > 0));
 
         var dest = src.DestDir;
         Directory.CreateDirectory(dest);
         var before = Snapshot(dest);
         var beforeAll = AllFiles(dest);
 
-        var args = new List<string> { query };
+        // One-row CSV so sldl matches structurally (Length must be in seconds).
+        var csvPath = Path.Combine(Path.GetTempPath(), "crate-" + Guid.NewGuid().ToString("N") + ".csv");
+        var hasLen = lengthSec is > 0;
+        var header = hasLen ? "Artist,Title,Length" : "Artist,Title";
+        var row = hasLen ? $"{Csv(qArtist)},{Csv(qTitle)},{lengthSec}" : $"{Csv(qArtist)},{Csv(qTitle)}";
+        await File.WriteAllTextAsync(csvPath, header + "\n" + row + "\n", ct);
+
+        var args = new List<string> { csvPath, "--input-type", "csv" };
         if (!string.IsNullOrEmpty(User)) { args.Add("--user"); args.Add(User); }
         if (!string.IsNullOrEmpty(Pass)) { args.Add("--pass"); args.Add(Pass); }
         args.Add("--pref-format"); args.Add(string.IsNullOrWhiteSpace(src.Pref) ? "flac" : src.Pref!);
         if (!string.IsNullOrWhiteSpace(src.Cond)) { args.Add("--cond"); args.Add(src.Cond!); args.Add("--strict-conditions"); }
         args.Add("--length-tol"); args.Add("5");
+        args.Add("--strict-artist");
         args.Add("--remove-ft");
         args.Add("-p"); args.Add(dest);
         if (cfg["SldlIndexPath"] is { Length: > 0 } idx) { args.Add("--index-path"); args.Add(idx); }
@@ -56,19 +69,23 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            TryDelete(csvPath);
             throw; // user pressed Stop
         }
         catch (OperationCanceledException)
         {
+            TryDelete(csvPath);
             CleanupNew(dest, beforeAll);
-            log.LogWarning("sldl timed out after {Sec}s for '{Query}'", timeoutSec, query);
+            log.LogWarning("sldl timed out after {Sec}s for '{Label}'", timeoutSec, label);
             return new DlResult(DlOutcome.Error, null, $"timed out after {timeoutSec}s");
         }
         catch (Exception ex)
         {
-            log.LogWarning("sldl failed to start for '{Query}': {Msg}", query, ex.Message);
+            TryDelete(csvPath);
+            log.LogWarning("sldl failed to start for '{Label}': {Msg}", label, ex.Message);
             return new DlResult(DlOutcome.Error, null, ex.Message);
         }
+        TryDelete(csvPath);
 
         var after = Snapshot(dest);
         var newFiles = after.Where(kv => !before.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList();
@@ -90,16 +107,20 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         return new DlResult(DlOutcome.NotFound, null, "no matching file found");
     }
 
-    private static readonly Regex TopicRe = new(@"(?i)\s*-\s*topic\b", RegexOptions.Compiled);
-    private static readonly Regex BracketRe = new(@"\s*[\(\[\{][^)\]\}]*[\)\]\}]", RegexOptions.Compiled);
-
-    // Strip YouTube channel junk ("- Topic") and bracketed noise so the Soulseek query is clean.
+    // Strip YouTube channel junk ("- Topic") and bracketed noise so the match terms are clean.
     private static string CleanQuery(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return "";
         s = TopicRe.Replace(s, " ");
         s = BracketRe.Replace(s, " ");
         return s.Trim().Trim('-').Trim();
+    }
+
+    private static string Csv(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { /* ignore */ }
     }
 
     private static HashSet<string> AllFiles(string dir)
