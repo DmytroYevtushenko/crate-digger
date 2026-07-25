@@ -50,6 +50,9 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         if (!string.IsNullOrEmpty(Pass)) { args.Add("--pass"); args.Add(Pass); }
         args.Add("--pref-format"); args.Add(string.IsNullOrWhiteSpace(src.Pref) ? "flac" : src.Pref!);
         if (!string.IsNullOrWhiteSpace(src.Cond)) { args.Add("--cond"); args.Add(src.Cond!); args.Add("--strict-conditions"); }
+        // Land the file flat in dest with a clean name — otherwise sldl creates a subfolder
+        // named after the input CSV (crate-<guid>/) for every single track.
+        args.Add("--name-format"); args.Add("{sartist( - )stitle|filename}");
         args.Add("--length-tol"); args.Add("5");
         args.Add("--strict-artist");
         args.Add("--remove-ft");
