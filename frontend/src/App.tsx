@@ -473,7 +473,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="card">
+      <div className="card tracks">
         <div className="label rowbetween">
           <span>Tracks {active && <span className="muted">· updating…</span>}</span>
           <span>
@@ -527,7 +527,7 @@ export default function App() {
                     <th className="sortable" onClick={() => toggleSort('artist')}>Artist{arrow('artist')}</th>
                     <th className="sortable" onClick={() => toggleSort('title')}>Track{arrow('title')}</th>
                     <th className="sortable" onClick={() => toggleSort('album')}>Album{arrow('album')}</th>
-                    <th>Length</th>
+                    <th>Len</th>
                     <th>Age</th>
                     <th className="sortable" onClick={() => toggleSort('state')}>State{arrow('state')}</th>
                     <th></th>
@@ -546,15 +546,15 @@ export default function App() {
                         <td onClick={(e) => e.stopPropagation()}>
                           {t.state === 'Mismatch' && (
                             <>
-                              <button className="mini" title="Actually correct — accept (Verified)" onClick={() => trackAction(t.id, 'confirm')}>✓ ok</button>
-                              <button className="mini ghost" title="Discard & try downloading again (Pending)" onClick={() => trackAction(t.id, 'retry')}>↻ retry</button>
-                              <button className="mini ghost" title="Don't want it — never retry (Blacklisted)" onClick={() => trackAction(t.id, 'reject')}>✕ skip</button>
+                              <button className="mini" title="Actually correct — accept (Verified)" onClick={() => trackAction(t.id, 'confirm')}>✓</button>
+                              <button className="mini ghost" title="Discard & try downloading again (Pending)" onClick={() => trackAction(t.id, 'retry')}>↻</button>
+                              <button className="mini ghost" title="Don't want it — never retry (Blacklisted)" onClick={() => trackAction(t.id, 'reject')}>✕</button>
                             </>
                           )}
                           {t.state === 'Failed' && (
                             <>
                               <button className="mini" title="Retry download" onClick={() => trackAction(t.id, 'retry')}>↻</button>
-                              <button className="mini ghost" title="Stop retrying — blacklist" onClick={() => trackAction(t.id, 'reject')}>✕ skip</button>
+                              <button className="mini ghost" title="Stop retrying — blacklist" onClick={() => trackAction(t.id, 'reject')}>✕</button>
                             </>
                           )}
                           {t.state === 'Blacklisted' && (
