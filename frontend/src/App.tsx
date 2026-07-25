@@ -73,6 +73,12 @@ function fmtDur(s: number | null): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
+// Long titles used to stretch the table sideways; clip them and show the full text on hover.
+function clip(v: string | null | undefined) {
+  if (!v) return null
+  return <span className="clip" title={v.length > 28 ? v : undefined}>{v}</span>
+}
+
 // Relative age from a stored UTC timestamp ("YYYY-MM-DD HH:MM:SS").
 function relAge(s: string | null): string {
   if (!s) return '—'
@@ -531,9 +537,9 @@ export default function App() {
                   {tracks.map((t) => (
                     <Fragment key={t.id}>
                       <tr className="trow" onClick={() => openTrack(t)}>
-                        <td>{t.artist ?? '—'}</td>
-                        <td>{t.title ?? '—'}</td>
-                        <td>{t.album ?? (t.enriched ? '—' : <span className="muted">…</span>)}</td>
+                        <td>{clip(t.artist) ?? '—'}</td>
+                        <td>{clip(t.title) ?? '—'}</td>
+                        <td>{clip(t.album) ?? (t.enriched ? '—' : <span className="muted">…</span>)}</td>
                         <td>{fmtDur(t.durationSec)}</td>
                         <td className="muted" title={t.createdAt ?? ''}>{relAge(t.createdAt)}</td>
                         <td><span className={`badge s-${t.state.toLowerCase()}`}>{stateLabel(t.state)}</span></td>

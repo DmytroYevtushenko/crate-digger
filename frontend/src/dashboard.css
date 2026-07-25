@@ -114,7 +114,9 @@ button.ghost { background: transparent; color: var(--accent); border: 1px solid 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-td:nth-child(2) { white-space: normal; }
+/* Clip long artist/track/album names so the action buttons stay reachable (full text in tooltip). */
+.clip { display: block; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td:nth-child(2) .clip { max-width: 40ch; }
 
 .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--border); }
 .badge.s-pending { background: #3a2f10; color: #e3b341; }
