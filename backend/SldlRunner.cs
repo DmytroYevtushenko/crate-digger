@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Crate.Api;
@@ -90,7 +91,13 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         var after = Snapshot(dest);
         var newFiles = after.Where(kv => !before.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList();
         if (newFiles.Count > 0)
-            return new DlResult(DlOutcome.Downloaded, newFiles[0], null);
+        {
+            // sldl may have pulled a whole album folder — keep only the best-matching track,
+            // delete every other new file (extra mixes, cover art, @eaDir) and empty dirs.
+            var kept = PickBest(newFiles, label);
+            CleanupExtras(dest, beforeAll, kept);
+            return new DlResult(DlOutcome.Downloaded, kept, null);
+        }
 
         // Nothing usable downloaded — remove any partial/leftover files this attempt created.
         CleanupNew(dest, beforeAll);
@@ -130,6 +137,45 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
             foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
                 set.Add(f);
         return set;
+    }
+
+    // Pick the new audio file whose filename best matches the target label (most shared words).
+    private static string PickBest(List<string> files, string label)
+    {
+        var target = Toks(label).ToHashSet();
+        var best = files[0];
+        var bestScore = -1;
+        foreach (var f in files)
+        {
+            // Title-word overlap dominates; prefer .flac on ties.
+            var score = Toks(Path.GetFileNameWithoutExtension(f)).Count(target.Contains) * 10
+                        + (Path.GetExtension(f).Equals(".flac", StringComparison.OrdinalIgnoreCase) ? 1 : 0);
+            if (score > bestScore) { bestScore = score; best = f; }
+        }
+        return best;
+    }
+
+    private static IEnumerable<string> Toks(string s)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in s.ToLowerInvariant()) sb.Append(char.IsLetterOrDigit(c) ? c : ' ');
+        return sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(t => t.Length > 1);
+    }
+
+    // Delete every new file except the one we keep, then remove any emptied directories.
+    private void CleanupExtras(string dir, HashSet<string> before, string kept)
+    {
+        if (!Directory.Exists(dir)) return;
+        foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).ToList())
+        {
+            if (before.Contains(f) || f == kept) continue;
+            try { File.Delete(f); } catch { /* ignore */ }
+        }
+        foreach (var d in Directory.EnumerateDirectories(dir, "*", SearchOption.AllDirectories)
+                     .OrderByDescending(x => x.Length).ToList())
+        {
+            try { if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d); } catch { /* ignore */ }
+        }
     }
 
     private void CleanupNew(string dir, HashSet<string> before)
