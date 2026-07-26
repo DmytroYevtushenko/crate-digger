@@ -7,6 +7,8 @@ have in your library, downloads the missing tracks from Soulseek, checks that ea
 actually the right song (not a wrong/live version), and tags it. A dashboard shows every track's
 status; a scheduler can run it automatically.
 
+![Crate dashboard](img/Screenshot_20260726_142221.png)
+
 It's built around three well-known tools (all bundled in the Docker image — you don't install them):
 
 - **yt-dlp** – reads the playlist and each track's clean metadata (artist / title / album).
