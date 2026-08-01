@@ -5,8 +5,9 @@ namespace Crate.Api;
 /// <summary>
 /// Re-runs the same Verifier used right after a download against tracks that are already
 /// Manual (linked to a library file by reconcile or a manual match) — catches cases where
-/// a fuzzy match landed on the wrong version (e.g. a remix instead of the original).
-/// Flags mismatches as ManualReview for the user to resolve via Resolve().
+/// a fuzzy match landed on the wrong version (e.g. a remix instead of the original). A pass
+/// moves the track to Verified (confirmed good); a mismatch flags it as ManualReview for the
+/// user to resolve via Resolve().
 /// </summary>
 public sealed class ManualVerifyService(Db db, Verifier verifier, YtDlp ytdlp, ILogger<ManualVerifyService> log)
 {
@@ -52,14 +53,23 @@ public sealed class ManualVerifyService(Db db, Verifier verifier, YtDlp ytdlp, I
             catch (Exception ex) { log.LogWarning("manual verify failed for track {Id}: {Msg}", t.Id, ex.Message); continue; }
             checkedCount++;
 
+            using var c = db.Open();
             if (v.Outcome == VerifyOutcome.Mismatch)
             {
-                using var c = db.Open();
                 c.Execute("UPDATE tracks SET state='ManualReview', updated_at=datetime('now') WHERE id=@id", new { id = t.Id });
                 c.Execute(@"INSERT INTO download_attempts(track_id, started_at, finished_at, result, failure_reason)
                             VALUES(@id, datetime('now'), datetime('now'), 'ManualMismatch', @d)",
                     new { id = t.Id, d = v.Detail });
                 flagged++;
+            }
+            else
+            {
+                // Passed on its own — counts the same as a manual "keep": confirmed, no longer
+                // just "in library, unchecked".
+                c.Execute("UPDATE tracks SET state='Verified', updated_at=datetime('now') WHERE id=@id", new { id = t.Id });
+                c.Execute(@"INSERT INTO download_attempts(track_id, started_at, finished_at, result, failure_reason)
+                            VALUES(@id, datetime('now'), datetime('now'), 'ManualVerified', @d)",
+                    new { id = t.Id, d = v.Detail });
             }
         }
 
