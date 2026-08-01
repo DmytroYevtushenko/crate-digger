@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 
 namespace Crate.Api;
@@ -74,30 +73,33 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
         return new VerifyResult(VerifyOutcome.Verified, "duration + tags ok");
     }
 
-    // Two strings conflict if both are non-empty and neither contains the other (normalized).
+    // Two strings conflict if both are non-empty, share too little word overlap (fuzzy: Cyrillic
+    // transliteration, diacritic folding, feat/remix/topic noise stripped — same as Reconcile's
+    // library matching), AND neither's compact (no-separator) form contains the other's. The
+    // compact-containment fallback catches a glued YouTube channel handle like "badboysbluefeatjohn"
+    // against the real tag "Bad Boys Blue", or "3doorsdown" against "3 Doors Down".
     private static bool Conflict(string? a, string? b)
     {
-        var na = Norm(a);
-        var nb = Norm(b);
-        if (na.Length == 0 || nb.Length == 0) return false; // can't judge
-        return !(na == nb || na.Contains(nb) || nb.Contains(na));
+        var ta = FuzzyText.Tokens(a);
+        var tb = FuzzyText.Tokens(b);
+        if (ta.Count == 0 || tb.Count == 0) return false; // can't judge
+        if (FuzzyText.Jaccard(ta, tb) >= 0.34) return false;
+
+        var ca = FuzzyText.Compact(a);
+        var cb = FuzzyText.Compact(b);
+        return !(ca.Length > 0 && cb.Length > 0 && (ca.Contains(cb) || cb.Contains(ca)));
     }
 
-    // Positive match: both present and one contains the other (normalized).
+    // Positive match: strong word overlap, or one's compact form contains the other's.
     private static bool Matches(string? a, string? b)
     {
-        var na = Norm(a);
-        var nb = Norm(b);
-        return na.Length > 0 && nb.Length > 0 && (na == nb || na.Contains(nb) || nb.Contains(na));
-    }
+        var ta = FuzzyText.Tokens(a);
+        var tb = FuzzyText.Tokens(b);
+        if (ta.Count > 0 && tb.Count > 0 && FuzzyText.Jaccard(ta, tb) >= 0.6) return true;
 
-    private static string Norm(string? s)
-    {
-        if (string.IsNullOrEmpty(s)) return "";
-        var sb = new StringBuilder();
-        foreach (var ch in s.ToLowerInvariant())
-            sb.Append(char.IsLetterOrDigit(ch) ? ch : ' ');
-        return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        var ca = FuzzyText.Compact(a);
+        var cb = FuzzyText.Compact(b);
+        return ca.Length > 0 && cb.Length > 0 && (ca.Contains(cb) || cb.Contains(ca));
     }
 
     private async Task<(int?, string?, string?)> ProbeAsync(string path, CancellationToken ct)
@@ -149,7 +151,7 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
         if (!root.TryGetProperty("results", out var results) || results.GetArrayLength() == 0)
             return null; // AcoustID doesn't know it — inconclusive, let duration/tags decide
 
-        var targetTitle = Norm(t.Title);
+        var targetTitle = FuzzyText.Compact(t.Title);
         var targetMbid = t.MbRecordingId;
         foreach (var res in results.EnumerateArray())
         {
@@ -157,7 +159,7 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
             foreach (var rec in recs.EnumerateArray())
             {
                 var recId = rec.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
-                var recTitle = Norm(rec.TryGetProperty("title", out var tEl) ? tEl.GetString() : null);
+                var recTitle = FuzzyText.Compact(rec.TryGetProperty("title", out var tEl) ? tEl.GetString() : null);
                 if (targetMbid is not null && recId == targetMbid)
                     return new VerifyResult(VerifyOutcome.Verified, "fingerprint matched MBID");
                 if (targetTitle.Length > 0 && recTitle.Length > 0 &&

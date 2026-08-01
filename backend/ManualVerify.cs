@@ -98,7 +98,7 @@ WHERE id=@id",
     }
 
     // Resolve a ManualReview track per the user's decision:
-    //   keep           - verifier was wrong; dismiss, stays linked to the same file.
+    //   keep           - you listened and confirmed it's the right track; counts as verified.
     //   keep-download  - keep the file in the library untouched, but re-download the track
     //                    fresh; the file is remembered so fuzzy matching won't re-link it.
     //   delete-download- remove the file and re-download the track fresh.
@@ -112,8 +112,8 @@ WHERE id=@id",
         switch (decision)
         {
             case "keep":
-                c.Execute("UPDATE tracks SET state='Manual', updated_at=datetime('now') WHERE id=@id", new { id = trackId });
-                return (true, "Manual", null);
+                c.Execute("UPDATE tracks SET state='Verified', updated_at=datetime('now') WHERE id=@id", new { id = trackId });
+                return (true, "Verified", null);
 
             case "keep-download":
                 if (t.FilePath is { } keepPath)

@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Dapper;
 
 namespace Crate.Api;
@@ -12,12 +10,12 @@ namespace Crate.Api;
 /// library_files (incremental by path+mtime+size), then matches files to tracks so that
 /// tracks you already own become Manual (and aren't downloaded again).
 ///
-/// Matching is fuzzy: both sides are cleaned of noise (- Topic, feat., brackets, years,
-/// remaster, official/video/lyrics), tokenized, and compared by word overlap (Jaccard) with
-/// duration as a confirming signal. This bridges messy YouTube titles vs clean Picard tags.
-/// (Transliteration — Cyrillic vs Latin — has no word overlap, so those need a manual track edit.)
+/// Matching is fuzzy (see FuzzyText): both sides are cleaned of noise (- Topic, feat., brackets,
+/// years, remaster, official/video/lyrics), Cyrillic-transliterated, and compared by word overlap
+/// (Jaccard) with duration as a confirming signal. This bridges messy YouTube titles vs clean
+/// Picard tags.
 /// </summary>
-public sealed partial class ReconcileService(Db db, IConfiguration cfg, ILogger<ReconcileService> log)
+public sealed class ReconcileService(Db db, IConfiguration cfg, ILogger<ReconcileService> log)
 {
     private static readonly string[] AudioExt = [".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav"];
     private volatile bool _running;
@@ -83,7 +81,7 @@ ON CONFLICT(path) DO UPDATE SET
         var tracks = c.Query<Track>("SELECT * FROM tracks WHERE state IN ('Pending','Failed')").ToList();
 
         var profiles = files
-            .Select(f => new FileProfile(f.Id, f.Path, Tokens(f.Title), Tokens(f.Artist), f.DurationSec))
+            .Select(f => new FileProfile(f.Id, f.Path, FuzzyText.Tokens(f.Title), FuzzyText.Tokens(f.Artist), f.DurationSec))
             .Where(p => p.Title.Count > 0)
             .ToList();
 
@@ -95,20 +93,20 @@ ON CONFLICT(path) DO UPDATE SET
         var matched = 0;
         foreach (var t in tracks)
         {
-            var tTitle = Tokens(t.Title ?? t.RawTitle);
+            var tTitle = FuzzyText.Tokens(t.Title ?? t.RawTitle);
             if (tTitle.Count == 0) continue;
-            var tArtist = Tokens(t.Artist);
+            var tArtist = FuzzyText.Tokens(t.Artist);
 
             FileProfile? best = null;
             double bestScore = 0;
             foreach (var f in profiles)
             {
                 if (ignored.Contains((t.Id, f.Path))) continue;
-                var tj = Jaccard(tTitle, f.Title);
+                var tj = FuzzyText.Jaccard(tTitle, f.Title);
                 if (tj < 0.6) continue;
                 var durClose = t.DurationSec is not null && f.Duration is not null
                                && Math.Abs(t.DurationSec.Value - f.Duration.Value) <= 7;
-                var aj = Jaccard(tArtist, f.Artist);
+                var aj = FuzzyText.Jaccard(tArtist, f.Artist);
                 if (!durClose && aj < 0.34) continue; // need duration OR artist to confirm
                 var score = tj + (durClose ? 0.3 : 0) + aj * 0.3;
                 if (score > bestScore) { bestScore = score; best = f; }
@@ -129,14 +127,14 @@ ON CONFLICT(path) DO UPDATE SET
         using var c = db.Open();
         var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
         if (t is null) return new List<object>();
-        var tTitle = Tokens(t.Title ?? t.RawTitle);
-        var tArtist = Tokens(t.Artist);
+        var tTitle = FuzzyText.Tokens(t.Title ?? t.RawTitle);
+        var tArtist = FuzzyText.Tokens(t.Artist);
         var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
         return files
             .Select(f =>
             {
-                var tj = Jaccard(tTitle, Tokens(f.Title));
-                var aj = Jaccard(tArtist, Tokens(f.Artist));
+                var tj = FuzzyText.Jaccard(tTitle, FuzzyText.Tokens(f.Title));
+                var aj = FuzzyText.Jaccard(tArtist, FuzzyText.Tokens(f.Artist));
                 var durClose = t.DurationSec is not null && f.DurationSec is not null
                                && Math.Abs(t.DurationSec.Value - f.DurationSec.Value) <= 10;
                 var score = Math.Round(tj * 0.7 + aj * 0.3 + (durClose ? 0.1 : 0), 3);
@@ -159,9 +157,12 @@ ON CONFLICT(path) DO UPDATE SET
         using var c = db.Open();
         var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
         if (t is null) return false;
-        var tTitle = Tokens(t.Title ?? t.RawTitle);
+        // Only tracks with no file yet are eligible — editing tags on a track that's already
+        // Manual/ManualReview/Verified/etc. must not silently re-link or flip its state/review queue.
+        if (t.State is not ("Pending" or "Failed")) return false;
+        var tTitle = FuzzyText.Tokens(t.Title ?? t.RawTitle);
         if (tTitle.Count == 0) return false;
-        var tArtist = Tokens(t.Artist);
+        var tArtist = FuzzyText.Tokens(t.Artist);
 
         var ignored = c.Query<string>("SELECT path FROM track_ignored_files WHERE track_id=@id", new { id = trackId }).ToHashSet();
         var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
@@ -169,13 +170,13 @@ ON CONFLICT(path) DO UPDATE SET
         foreach (var f in files)
         {
             if (ignored.Contains(f.Path)) continue;
-            var ft = Tokens(f.Title);
+            var ft = FuzzyText.Tokens(f.Title);
             if (ft.Count == 0) continue;
-            var tj = Jaccard(tTitle, ft);
+            var tj = FuzzyText.Jaccard(tTitle, ft);
             if (tj < 0.6) continue;
             var durClose = t.DurationSec is not null && f.DurationSec is not null
                            && Math.Abs(t.DurationSec.Value - f.DurationSec.Value) <= 7;
-            var aj = Jaccard(tArtist, Tokens(f.Artist));
+            var aj = FuzzyText.Jaccard(tArtist, FuzzyText.Tokens(f.Artist));
             if (!durClose && aj < 0.34) continue;
             var score = tj + (durClose ? 0.3 : 0) + aj * 0.3;
             if (score > bestScore) { bestScore = score; bestId = f.Id; bestPath = f.Path; }
@@ -194,63 +195,6 @@ ON CONFLICT(path) DO UPDATE SET
         using (var c = db.Open())
             roots.AddRange(c.Query<string>("SELECT DISTINCT dest_dir FROM sources WHERE dest_dir IS NOT NULL"));
         return roots.Where(Directory.Exists).Distinct();
-    }
-
-    // ---- fuzzy text helpers ----
-
-    [GeneratedRegex(@"[\(\[\{].*?[\)\]\}]")] private static partial Regex BracketRe();
-    [GeneratedRegex(@"(?i)-\s*topic\b")] private static partial Regex TopicRe();
-    [GeneratedRegex(@"(?i)\b(feat|ft|featuring|official|video|lyrics?|audio|remaster(ed)?|remix|hd|hq)\b")] private static partial Regex NoiseRe();
-    [GeneratedRegex(@"\b\d{4}\b")] private static partial Regex YearRe();
-
-    // Cyrillic (RU/UK) -> Latin, so "Александр Маршал" and "Aleksandr Marshal" reduce to the same tokens.
-    private static readonly Dictionary<char, string> Cyr = new()
-    {
-        ['а'] = "a", ['б'] = "b", ['в'] = "v", ['г'] = "g", ['ґ'] = "g", ['д'] = "d", ['е'] = "e", ['ё'] = "yo",
-        ['є'] = "ye", ['ж'] = "zh", ['з'] = "z", ['и'] = "i", ['і'] = "i", ['ї'] = "yi", ['й'] = "y", ['к'] = "k",
-        ['л'] = "l", ['м'] = "m", ['н'] = "n", ['о'] = "o", ['п'] = "p", ['р'] = "r", ['с'] = "s", ['т'] = "t",
-        ['у'] = "u", ['ф'] = "f", ['х'] = "kh", ['ц'] = "ts", ['ч'] = "ch", ['ш'] = "sh", ['щ'] = "shch",
-        ['ъ'] = "", ['ы'] = "y", ['ь'] = "", ['э'] = "e", ['ю'] = "yu", ['я'] = "ya",
-    };
-
-    private static string Latinize(string s)
-    {
-        var sb = new StringBuilder(s.Length);
-        foreach (var ch in s) sb.Append(Cyr.TryGetValue(ch, out var r) ? r : ch.ToString());
-        return sb.ToString();
-    }
-
-    private static HashSet<string> Tokens(string? s)
-    {
-        var set = new HashSet<string>();
-        if (string.IsNullOrEmpty(s)) return set;
-        var low = Latinize(s.ToLowerInvariant());
-        low = TopicRe().Replace(low, " ");   // strip the YouTube "- Topic" channel suffix (a real word "topic" is kept)
-        low = BracketRe().Replace(low, " ");
-        var fi = low.IndexOf(" feat", StringComparison.Ordinal);
-        if (fi >= 0) low = low[..fi];
-        low = NoiseRe().Replace(low, " ");
-        low = YearRe().Replace(low, " ");
-
-        var sb = new StringBuilder();
-        foreach (var ch in low) sb.Append(char.IsLetterOrDigit(ch) ? ch : ' ');
-        var compact = new StringBuilder();
-        foreach (var tok in sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (tok.Length > 1) set.Add(tok);
-            compact.Append(tok);
-        }
-        // Acronyms / very short titles (e.g. "S.O.S.") yield only 1-char tokens -> fall back to a compact form.
-        if (set.Count == 0 && compact.Length > 1) set.Add(compact.ToString());
-        return set;
-    }
-
-    private static double Jaccard(HashSet<string> a, HashSet<string> b)
-    {
-        if (a.Count == 0 || b.Count == 0) return 0;
-        var inter = a.Count(b.Contains);
-        var union = a.Count + b.Count - inter;
-        return union == 0 ? 0 : (double)inter / union;
     }
 
     private async Task<(string?, string?, string?, int?)> ProbeAsync(string path, CancellationToken ct)

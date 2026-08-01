@@ -248,11 +248,17 @@ export default function App() {
     catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
+  const MANUAL_REVIEW_NOTE: Record<string, string> = {
+    keep: 'Confirmed — moved to Verified.',
+    'keep-download': 'File kept in your library (untouched). Track queued for a fresh download of the original.',
+    'delete-download': 'File deleted. Track queued for a fresh download of the original.',
+  }
   async function manualReviewAction(id: number, decision: 'keep' | 'keep-download' | 'delete-download') {
     setBusy(`mr-${id}`)
     preserveScroll.current = window.scrollY
     try {
       await api(`/api/tracks/${id}/manual-review`, { method: 'POST', body: JSON.stringify({ decision }) })
+      setNote(MANUAL_REVIEW_NOTE[decision])
       await Promise.all([refreshMeta(), loadTracks()])
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
