@@ -42,6 +42,7 @@ public sealed class Track
 public record TrackEdit(string? Artist, string? Title, string? Album);
 public record MatchInput(string Path);
 public record DlOverride(string? Cond, string? Pref);
+public record ManualReviewInput(string Decision);
 
 public sealed class LibraryFile
 {

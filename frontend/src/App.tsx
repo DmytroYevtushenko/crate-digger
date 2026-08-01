@@ -30,6 +30,7 @@ type Track = {
   updatedAt: string | null
 }
 type LibStatus = { running: boolean; libraryFiles: number; matched: number; last: string | null }
+type ManualVerifyStatus = { running: boolean; last: string | null }
 type CookieStatus = { present: boolean; updatedAt: string | null }
 type TracksPage = { total: number; items: Track[] }
 type Attempt = { result?: string; failure_reason?: string; finished_at?: string }
@@ -57,7 +58,7 @@ const SCHEDULES: { label: string; cron: string }[] = [
 ]
 
 // Display labels for states (internal value stays the same).
-const STATE_LABELS: Record<string, string> = { Manual: 'In library' }
+const STATE_LABELS: Record<string, string> = { Manual: 'In library', ManualReview: 'Needs review' }
 const stateLabel = (s: string) => STATE_LABELS[s] ?? s
 
 const PAGE_SIZE = 50
@@ -106,6 +107,7 @@ export default function App() {
   const [sources, setSources] = useState<Source[]>([])
   const [cookies, setCookies] = useState<CookieStatus | null>(null)
   const [lib, setLib] = useState<LibStatus | null>(null)
+  const [mv, setMv] = useState<ManualVerifyStatus | null>(null)
 
   const [tracks, setTracks] = useState<Track[]>([])
   const [tracksTotal, setTracksTotal] = useState(0)
@@ -132,14 +134,15 @@ export default function App() {
 
   const refreshMeta = useCallback(async () => {
     try {
-      const [h, s, src, ck, ls] = await Promise.all([
+      const [h, s, src, ck, ls, mvs] = await Promise.all([
         api<Health>('/health'),
         api<Stats>('/api/stats'),
         api<Source[]>('/api/sources'),
         api<CookieStatus>('/api/cookies/status'),
         api<LibStatus>('/api/reconcile/status'),
+        api<ManualVerifyStatus>('/api/manual-verify/status'),
       ])
-      setHealth(h); setStats(s); setSources(src); setCookies(ck); setLib(ls); setErr(null)
+      setHealth(h); setStats(s); setSources(src); setCookies(ck); setLib(ls); setMv(mvs); setErr(null)
     } catch (e) {
       setErr(String(e))
     }
@@ -173,7 +176,7 @@ export default function App() {
     return () => clearTimeout(h)
   }, [loadTracks])
 
-  const active = lib?.running === true || tracks.some((t) => t.state === 'Queued' || t.state === 'Downloading')
+  const active = lib?.running === true || mv?.running === true || tracks.some((t) => t.state === 'Queued' || t.state === 'Downloading')
   useEffect(() => {
     if (!active) return
     const h = setInterval(() => { void refreshMeta(); void loadTracks() }, 2500)
@@ -235,6 +238,21 @@ export default function App() {
     try {
       const r = await api<{ matched: number }>('/api/rematch-all', { method: 'POST' })
       setNote(`Re-matched ${r.matched} track(s) to your library → In library.`)
+      await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function verifyManual() {
+    setBusy('manual-verify')
+    try { await api('/api/manual-verify', { method: 'POST' }); await refreshMeta() }
+    catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function manualReviewAction(id: number, decision: 'keep' | 'keep-download' | 'delete-download') {
+    setBusy(`mr-${id}`)
+    preserveScroll.current = window.scrollY
+    try {
+      await api(`/api/tracks/${id}/manual-review`, { method: 'POST', body: JSON.stringify({ decision }) })
       await Promise.all([refreshMeta(), loadTracks()])
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
@@ -496,6 +514,15 @@ export default function App() {
             >
               {busy === 'rematch-all' ? '…' : 'Rematch library'}
             </button>
+            <button
+              className="mini ghost"
+              style={{ marginLeft: 6 }}
+              disabled={busy === 'manual-verify' || mv?.running === true}
+              onClick={verifyManual}
+              title={mv?.last ?? 'Re-run the verifier against all In-library tracks — flags ones whose file doesn\'t actually match (e.g. a remix) as Needs review'}
+            >
+              {mv?.running ? '…' : 'Verify manual'}
+            </button>
           </span>
         </div>
 
@@ -559,6 +586,13 @@ export default function App() {
                           )}
                           {t.state === 'Blacklisted' && (
                             <button className="mini" title="Un-blacklist (retry)" onClick={() => trackAction(t.id, 'retry')}>↻</button>
+                          )}
+                          {t.state === 'ManualReview' && (
+                            <>
+                              <button className="mini" title="Keep — this file is actually correct" onClick={() => manualReviewAction(t.id, 'keep')}>✓</button>
+                              <button className="mini ghost" title="Keep this file too, but also download the original" onClick={() => manualReviewAction(t.id, 'keep-download')}>⇩</button>
+                              <button className="mini ghost" title="Delete this file and download the original" onClick={() => manualReviewAction(t.id, 'delete-download')}>🗑</button>
+                            </>
                           )}
                         </td>
                       </tr>

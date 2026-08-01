@@ -133,5 +133,13 @@ CREATE TABLE IF NOT EXISTS actions (
     config_json TEXT,
     enabled     INTEGER NOT NULL DEFAULT 1
 );
+
+-- Files a manual-review decision rejected for a track, so fuzzy matching never re-links
+-- the same rejected file back onto it (see ManualVerifyService.Resolve ""keep-download"").
+CREATE TABLE IF NOT EXISTS track_ignored_files (
+    track_id INTEGER NOT NULL REFERENCES tracks(id),
+    path     TEXT    NOT NULL,
+    PRIMARY KEY (track_id, path)
+);
 ";
 }

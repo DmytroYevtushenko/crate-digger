@@ -143,6 +143,7 @@ thead th:nth-child(7), .trow > td:nth-child(7) { width: 104px; text-align: right
 .badge.s-downloading { background: #1f2f22; color: #3fb950; }
 .badge.s-downloaded { background: #113a1c; color: var(--ok); }
 .badge.s-manual { background: #2a2440; color: #b392f0; }
+.badge.s-manualreview { background: #3a2a10; color: #f0a020; }
 
 .card.warn { border-color: #e3b341; color: #e3b341; }
 

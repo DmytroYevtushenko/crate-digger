@@ -38,6 +38,7 @@ var verifier = new Verifier(app.Configuration, lf.CreateLogger<Verifier>());
 var tagger = new Tagger(app.Configuration, lf.CreateLogger<Tagger>());
 var downloader = new Downloader(db, ytdlp, sldl, verifier, tagger, lf.CreateLogger<Downloader>());
 var reconcile = new ReconcileService(db, app.Configuration, lf.CreateLogger<ReconcileService>());
+var manualVerify = new ManualVerifyService(db, verifier, lf.CreateLogger<ManualVerifyService>());
 var scheduler = new SchedulerService(db, sync, downloader, app.Configuration, lf.CreateLogger<SchedulerService>());
 scheduler.Start(app.Lifetime.ApplicationStopping);
 
@@ -131,6 +132,21 @@ app.MapGet("/api/reconcile/status", () =>
     var files = c.ExecuteScalar<long>("SELECT COUNT(*) FROM library_files");
     var matched = c.ExecuteScalar<long>("SELECT COUNT(*) FROM library_files WHERE matched_track_id IS NOT NULL");
     return Results.Ok(new { running = reconcile.Running, libraryFiles = files, matched, last = reconcile.LastResult });
+});
+
+// Re-run the download-time Verifier against all Manual (already-in-library) tracks — catches a fuzzy
+// match that landed on the wrong version (e.g. a remix). Mismatches move to ManualReview.
+app.MapPost("/api/manual-verify", () => Results.Ok(new { started = manualVerify.Start(), running = manualVerify.Running }));
+
+app.MapGet("/api/manual-verify/status", () => Results.Ok(new { running = manualVerify.Running, last = manualVerify.LastResult }));
+
+// Resolve a ManualReview track: keep (verifier was wrong), keep-download (keep the file, also
+// re-download fresh), or delete-download (remove the file, re-download fresh).
+app.MapPost("/api/tracks/{id:long}/manual-review", (long id, ManualReviewInput input) =>
+{
+    var (ok, state, error) = manualVerify.Resolve(id, input.Decision);
+    if (ok) return Results.Ok(new { id, state });
+    return error == "unknown decision" ? Results.BadRequest(new { error }) : Results.NotFound(new { error });
 });
 
 // Review-queue actions: confirm a Mismatch as OK, reject (blacklist), or retry a Failed/Mismatch.

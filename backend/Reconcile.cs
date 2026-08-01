@@ -87,6 +87,11 @@ ON CONFLICT(path) DO UPDATE SET
             .Where(p => p.Title.Count > 0)
             .ToList();
 
+        // Paths a manual-review decision already rejected for a given track — never re-offer them.
+        var ignored = c.Query("SELECT track_id, path FROM track_ignored_files")
+            .Select(r => ((long)r.track_id, (string)r.path))
+            .ToHashSet();
+
         var matched = 0;
         foreach (var t in tracks)
         {
@@ -98,6 +103,7 @@ ON CONFLICT(path) DO UPDATE SET
             double bestScore = 0;
             foreach (var f in profiles)
             {
+                if (ignored.Contains((t.Id, f.Path))) continue;
                 var tj = Jaccard(tTitle, f.Title);
                 if (tj < 0.6) continue;
                 var durClose = t.DurationSec is not null && f.Duration is not null
@@ -157,10 +163,12 @@ ON CONFLICT(path) DO UPDATE SET
         if (tTitle.Count == 0) return false;
         var tArtist = Tokens(t.Artist);
 
+        var ignored = c.Query<string>("SELECT path FROM track_ignored_files WHERE track_id=@id", new { id = trackId }).ToHashSet();
         var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
         long bestId = 0; string? bestPath = null; double bestScore = 0;
         foreach (var f in files)
         {
+            if (ignored.Contains(f.Path)) continue;
             var ft = Tokens(f.Title);
             if (ft.Count == 0) continue;
             var tj = Jaccard(tTitle, ft);
