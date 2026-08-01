@@ -8,7 +8,7 @@ namespace Crate.Api;
 /// a fuzzy match landed on the wrong version (e.g. a remix instead of the original).
 /// Flags mismatches as ManualReview for the user to resolve via Resolve().
 /// </summary>
-public sealed class ManualVerifyService(Db db, Verifier verifier, ILogger<ManualVerifyService> log)
+public sealed class ManualVerifyService(Db db, Verifier verifier, YtDlp ytdlp, ILogger<ManualVerifyService> log)
 {
     private volatile bool _running;
     private string? _last;
@@ -40,6 +40,13 @@ public sealed class ManualVerifyService(Db db, Verifier verifier, ILogger<Manual
         {
             if (ct.IsCancellationRequested) break;
 
+            // Manual tracks never went through the download pipeline's enrichment step, so their
+            // artist/title are often still the raw YouTube channel/video title (e.g. "officialddt"
+            // instead of "ДДТ") — that alone makes the Verifier's tag check flag a correct match as
+            // a mismatch. Enrich once here, same call the downloader already makes, before comparing.
+            if (!t.Enriched && t.ExternalId is not null)
+                await EnrichAsync(t, ct);
+
             VerifyResult v;
             try { v = await verifier.VerifyAsync(t.FilePath!, t, ct); }
             catch (Exception ex) { log.LogWarning("manual verify failed for track {Id}: {Msg}", t.Id, ex.Message); continue; }
@@ -58,6 +65,36 @@ public sealed class ManualVerifyService(Db db, Verifier verifier, ILogger<Manual
 
         _last = $"checked {checkedCount}, flagged {flagged} for review";
         log.LogInformation("Manual verify: {Res}", _last);
+    }
+
+    // Same enrichment SyncService.EnrichAsync/Downloader already do per-track — pulls authoritative
+    // artist/track/album from YouTube Music and updates both the DB row and the in-memory track.
+    private async Task EnrichAsync(Track t, CancellationToken ct)
+    {
+        try
+        {
+            var m = await ytdlp.GetMetaAsync(t.ExternalId!, ct);
+            using var c = db.Open();
+            c.Execute(@"UPDATE tracks SET
+    artist       = COALESCE(@artist, artist),
+    title        = COALESCE(@track,  title),
+    album        = @album,
+    duration_sec = COALESCE(@dur, duration_sec),
+    enriched     = 1,
+    updated_at   = datetime('now')
+WHERE id=@id",
+                new { artist = m?.Artist, track = m?.Track, album = m?.Album, dur = m?.Duration, id = t.Id });
+            t.Artist = m?.Artist ?? t.Artist;
+            t.Title = m?.Track ?? t.Title;
+            t.Album = m?.Album;
+            t.DurationSec = m?.Duration ?? t.DurationSec;
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning("manual-verify enrich failed for {Ext}: {Msg}", t.ExternalId, ex.Message);
+            using var c = db.Open();
+            c.Execute("UPDATE tracks SET enriched=1 WHERE id=@id", new { id = t.Id });
+        }
     }
 
     // Resolve a ManualReview track per the user's decision:
