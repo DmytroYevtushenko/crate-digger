@@ -25,6 +25,11 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
     private string? User => cfg["SLDL_USER"];
     private string? Pass => cfg["SLDL_PASS"];
 
+    // sldl always binds a fixed Soulseek listen port under one shared account, so two instances
+    // running at once (e.g. a manual retry overlapping the batch queue) fight over the port and
+    // one fails or hangs to timeout. Serialize every invocation process-wide.
+    private static readonly SemaphoreSlim Gate = new(1, 1);
+
     public async Task<DlResult> DownloadAsync(string artist, string? title, int? lengthSec, Source src, CancellationToken ct = default)
     {
         var qArtist = CleanQuery(artist);
@@ -65,10 +70,11 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         int code;
         string stdout, stderr;
         var timeoutSec = int.TryParse(cfg["SldlTimeoutSec"], out var ts) && ts > 0 ? ts : 300;
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        linked.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
+        await Gate.WaitAsync(ct);
         try
         {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            linked.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
             (code, stdout, stderr) = await RunAsync(args, linked.Token);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -88,6 +94,10 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
             TryDelete(csvPath);
             log.LogWarning("sldl failed to start for '{Label}': {Msg}", label, ex.Message);
             return new DlResult(DlOutcome.Error, null, ex.Message);
+        }
+        finally
+        {
+            Gate.Release();
         }
         TryDelete(csvPath);
 
