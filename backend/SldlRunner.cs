@@ -62,7 +62,10 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         args.Add("--strict-artist");
         args.Add("--remove-ft");
         args.Add("-p"); args.Add(dest);
-        if (cfg["SldlIndexPath"] is { Length: > 0 } idx) { args.Add("--index-path"); args.Add(idx); }
+        // No --index-path either: sldl's index is a second, independent record of "already handled"
+        // that never expires, so a track it once attempted is skipped forever with "1 tracks already
+        // exist" — it won't even search. Crate's own per-track state decides what to (re)try, and only
+        // tracks it considers missing reach this method.
         // No --skip-music-dir: sldl decides "already owned" by title alone, ignoring the artist, so it
         // reported e.g. "Скриптонит - Стиль" as owned because the library holds "Wellboy - Стиль" — the
         // track then never downloaded. Ownership is Crate's call (Reconcile confirms artist + duration),
