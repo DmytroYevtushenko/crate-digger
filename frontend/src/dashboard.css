@@ -111,27 +111,34 @@ button.ghost { background: transparent; color: var(--accent); border: 1px solid 
 .srclist li:last-child { border-bottom: none; }
 .actions { display: flex; gap: 8px; flex-shrink: 0; }
 
-/* tracks table — fixed layout so it always fits the viewport (never scrolls sideways) */
-.tablewrap { margin-top: 10px; }
-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; }
+/* tracks table — fixed layout budgeted across all 9 columns; overflow-x is a last-resort safety net
+   so the action buttons can never end up unreachable off-screen. */
+.tablewrap { margin-top: 10px; overflow-x: auto; }
+table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 14px; min-width: 680px; }
+th, td { text-align: left; padding: 6px 5px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; }
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-/* Column budget: text columns flex, the rest are just wide enough for their content. */
-thead th:nth-child(1), .trow > td:nth-child(1) { width: 22%; }
-thead th:nth-child(2), .trow > td:nth-child(2) { width: 26%; }
-thead th:nth-child(3), .trow > td:nth-child(3) { width: 18%; }
-thead th:nth-child(4), .trow > td:nth-child(4) { width: 52px; }
-thead th:nth-child(5), .trow > td:nth-child(5) { width: 48px; }
-thead th:nth-child(6), .trow > td:nth-child(6) { width: 96px; }
-thead th:nth-child(7), .trow > td:nth-child(7) { width: 104px; text-align: right; }
+/* Column budget: the three text columns flex, numeric ones get only what their content needs. */
+thead th:nth-child(1), .trow > td:nth-child(1) { width: 21%; }   /* artist */
+thead th:nth-child(2), .trow > td:nth-child(2) { width: 24%; }   /* track  */
+thead th:nth-child(3), .trow > td:nth-child(3) { width: 16%; }   /* album  */
+thead th:nth-child(4), .trow > td:nth-child(4) { width: 46px; }  /* len    */
+thead th:nth-child(5), .trow > td:nth-child(5) { width: 54px; }  /* rate   */
+thead th:nth-child(6), .trow > td:nth-child(6) { width: 56px; }  /* size   */
+thead th:nth-child(7), .trow > td:nth-child(7) { width: 42px; }  /* age    */
+thead th:nth-child(8), .trow > td:nth-child(8) { width: 86px; }  /* state  */
+thead th:nth-child(9), .trow > td:nth-child(9) { width: 104px; text-align: right; } /* actions */
 /* Clip long artist/track/album names so the action buttons stay reachable (full text in tooltip). */
 .clip { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* On narrow screens drop Album + Age instead of scrolling; the row detail still shows everything. */
-@media (max-width: 760px) {
-  thead th:nth-child(3), .trow > td:nth-child(3),
-  thead th:nth-child(5), .trow > td:nth-child(5) { display: none; }
+/* Tight viewports: drop Album first, then Age. The expanded row still shows everything. */
+@media (max-width: 1180px) {
+  thead th:nth-child(3), .trow > td:nth-child(3) { display: none; }
+  thead th:nth-child(1), .trow > td:nth-child(1) { width: 28%; }
+  thead th:nth-child(2), .trow > td:nth-child(2) { width: 32%; }
+}
+@media (max-width: 880px) {
+  thead th:nth-child(7), .trow > td:nth-child(7) { display: none; }
   thead th:nth-child(1), .trow > td:nth-child(1) { width: 32%; }
-  thead th:nth-child(2), .trow > td:nth-child(2) { width: 38%; }
+  thead th:nth-child(2), .trow > td:nth-child(2) { width: 36%; }
 }
 
 .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--border); }
@@ -147,7 +154,7 @@ thead th:nth-child(7), .trow > td:nth-child(7) { width: 104px; text-align: right
 
 .card.warn { border-color: #e3b341; color: #e3b341; }
 
-.mini { padding: 3px 7px; font-size: 12px; margin-left: 3px; }
+.mini { padding: 3px 6px; font-size: 12px; margin-left: 2px; }
 .badge.s-blacklisted { background: #2a2a2a; color: #9aa2ad; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }

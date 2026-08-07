@@ -83,9 +83,10 @@ function fmtRate(k: number | null): string {
   return k ? `${k}k` : '\u2014'
 }
 
+// Compact, matching the bitrate column's "728k" style — exact value goes in the tooltip.
 function fmtSize(b: number | null): string {
   if (!b) return '\u2014'
-  return b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`
+  return b >= 1048576 ? `${(b / 1048576).toFixed(1)}M` : `${Math.max(1, Math.round(b / 1024))}K`
 }
 
 // Long titles used to stretch the table sideways; clip them and show the full text on hover.
@@ -333,6 +334,17 @@ export default function App() {
     try {
       await api(`/api/tracks/${id}/match`, { method: 'POST', body: JSON.stringify({ path }) })
       setOpenId(null); await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function unlinkFile(id: number) {
+    setBusy(`unlink-${id}`)
+    preserveScroll.current = window.scrollY
+    try {
+      await api(`/api/tracks/${id}/unlink`, { method: 'POST' })
+      setNote('File kept on disk, link removed \u2014 track queued to download another version.')
+      setOpenId(null)
+      await Promise.all([refreshMeta(), loadTracks()])
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
@@ -630,7 +642,7 @@ export default function App() {
                         <td>{fmtDur(t.durationSec)}</td>
                         <td className={t.bitrateKbps && t.bitrateKbps < 500 ? 'lossy' : 'muted'}
                             title={t.bitrateKbps ? `${t.bitrateKbps} kbps` : undefined}>{fmtRate(t.bitrateKbps)}</td>
-                        <td className="muted">{fmtSize(t.sizeBytes)}</td>
+                        <td className="muted" title={t.sizeBytes ? `${(t.sizeBytes / 1048576).toFixed(2)} MB` : undefined}>{fmtSize(t.sizeBytes)}</td>
                         <td className="muted" title={t.createdAt ?? ''}>{relAge(t.createdAt)}</td>
                         <td><span className={`badge s-${t.state.toLowerCase()}`}>{stateLabel(t.state)}</span></td>
                         <td onClick={(e) => e.stopPropagation()}>
@@ -711,10 +723,19 @@ export default function App() {
                                     <button className="mini ghost" onClick={() => setConfirmDelFile(null)}>Cancel</button>
                                   </>
                                 ) : (
-                                  <button className="mini ghost" onClick={() => setConfirmDelFile(t.id)}
-                                    title="Remove this file from disk (bad quality or wrong version)">
-                                    🗑 Delete file…
-                                  </button>
+                                  <>
+                                    <button className="mini" disabled={busy === `unlink-${t.id}`} onClick={() => unlinkFile(t.id)}
+                                      title="Wrong version? Keep the file where it is and download another one for this track">
+                                      {busy === `unlink-${t.id}` ? '…' : '↷ Wrong version — get another'}
+                                    </button>
+                                    <button className="mini ghost" onClick={() => setConfirmDelFile(t.id)}
+                                      title="Erase this file from disk (bad quality — you don't want to keep it at all)">
+                                      🗑 Delete file…
+                                    </button>
+                                    {!t.filePath.includes('/inbox/') && (
+                                      <span className="muted small">this file is in your master library</span>
+                                    )}
+                                  </>
                                 )}
                               </div>
                             )}

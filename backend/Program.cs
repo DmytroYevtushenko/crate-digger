@@ -163,6 +163,14 @@ app.MapPost("/api/tracks/{id:long}/youtube-download", async (long id, Cancellati
     return ok ? Results.Ok(new { id, path, bitrate }) : Results.BadRequest(new { error });
 });
 
+// "Wrong version" for a track linked to a file you already owned: keep the file, forget the link,
+// and queue a fresh download. Non-destructive, so no confirmation step needed.
+app.MapPost("/api/tracks/{id:long}/unlink", (long id) =>
+{
+    var (ok, error) = reconcile.UnlinkFile(id);
+    return ok ? Results.Ok(new { id, state = "Pending" }) : Results.BadRequest(new { error });
+});
+
 // Delete a track's file from disk (bad quality / wrong version) and either queue a fresh download
 // or blacklist it. Destructive, so the UI asks for a second click before calling this.
 app.MapPost("/api/tracks/{id:long}/delete-file", (long id, DeleteFileInput? input) =>

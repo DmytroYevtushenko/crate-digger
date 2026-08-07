@@ -73,22 +73,7 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
         return new VerifyResult(VerifyOutcome.Verified, "duration + tags ok");
     }
 
-    // Two strings conflict if both are non-empty, share too little word overlap (fuzzy: Cyrillic
-    // transliteration, diacritic folding, feat/remix/topic noise stripped — same as Reconcile's
-    // library matching), AND neither's compact (no-separator) form contains the other's. The
-    // compact-containment fallback catches a glued YouTube channel handle like "badboysbluefeatjohn"
-    // against the real tag "Bad Boys Blue", or "3doorsdown" against "3 Doors Down".
-    private static bool Conflict(string? a, string? b)
-    {
-        var ta = FuzzyText.Tokens(a);
-        var tb = FuzzyText.Tokens(b);
-        if (ta.Count == 0 || tb.Count == 0) return false; // can't judge
-        if (FuzzyText.Jaccard(ta, tb) >= 0.34) return false;
-
-        var ca = FuzzyText.Compact(a);
-        var cb = FuzzyText.Compact(b);
-        return !(ca.Length > 0 && cb.Length > 0 && (ca.Contains(cb) || cb.Contains(ca)));
-    }
+    private static bool Conflict(string? a, string? b) => FuzzyText.Conflict(a, b);
 
     // Positive match: strong word overlap, or one's compact form contains the other's.
     private static bool Matches(string? a, string? b)

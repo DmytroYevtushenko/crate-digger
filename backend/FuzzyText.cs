@@ -84,6 +84,22 @@ public static partial class FuzzyText
         return sb.ToString();
     }
 
+    /// <summary>
+    /// True when both names are known and clearly denote different people/works — no meaningful word
+    /// overlap and neither's compact form contains the other. Unknown on either side is not a conflict.
+    /// </summary>
+    public static bool Conflict(string? a, string? b)
+    {
+        var ta = Tokens(a);
+        var tb = Tokens(b);
+        if (ta.Count == 0 || tb.Count == 0) return false; // can't judge
+        if (Jaccard(ta, tb) >= 0.34) return false;
+
+        var ca = Compact(a);
+        var cb = Compact(b);
+        return !(ca.Length > 0 && cb.Length > 0 && (ca.Contains(cb) || cb.Contains(ca)));
+    }
+
     public static double Jaccard(HashSet<string> a, HashSet<string> b)
     {
         if (a.Count == 0 || b.Count == 0) return 0;

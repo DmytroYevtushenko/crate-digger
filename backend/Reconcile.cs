@@ -109,6 +109,26 @@ UPDATE tracks SET
 WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
 
     /// <summary>
+    /// Breaks the link between a track and its file without touching the file itself, and queues the
+    /// track for a fresh download. The rejected path is remembered so matching won't re-link it.
+    /// This is the safe way to swap versions when the linked file lives in the master library.
+    /// </summary>
+    public (bool Ok, string? Error) UnlinkFile(long trackId)
+    {
+        using var c = db.Open();
+        var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
+        if (t is null) return (false, "track not found");
+        if (t.FilePath is null) return (false, "track has no linked file");
+
+        c.Execute("INSERT OR IGNORE INTO track_ignored_files(track_id, path) VALUES(@id, @p)", new { id = trackId, p = t.FilePath });
+        c.Execute("UPDATE library_files SET matched_track_id=NULL WHERE path=@p", new { p = t.FilePath });
+        c.Execute(@"UPDATE tracks SET state='Pending', file_path=NULL, bitrate_kbps=NULL, size_bytes=NULL,
+                    updated_at=datetime('now') WHERE id=@id", new { id = trackId });
+        log.LogInformation("Unlinked track {Id} from {Path} (kept on disk) => Pending", trackId, t.FilePath);
+        return (true, null);
+    }
+
+    /// <summary>
     /// Deletes a track's file from disk and drops it from the library index. The track then either
     /// goes back in the download queue (blacklist=false) or is never fetched again (blacklist=true).
     /// Used to get rid of a bad-quality or plain wrong file that a match/download landed on.
@@ -135,9 +155,12 @@ WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
         return (true, state, null);
     }
 
-    private sealed record FileProfile(long Id, string Path, HashSet<string> Title, HashSet<string> Artist, int? Duration);
+    private sealed record FileProfile(long Id, string Path, HashSet<string> Title, HashSet<string> Artist, string? ArtistRaw, int? Duration);
 
-    // The shared auto-match rule: strong title overlap, confirmed by duration OR artist.
+    // The shared auto-match rule: strong title overlap, confirmed by duration OR artist, and never
+    // over a plain artist contradiction. Title+duration alone is not enough — a common short title
+    // ("Restless") plus a coincidental runtime matched a track by the band "untitled" to Alison
+    // Krauss & Union Station, which then blocked the real song from ever downloading.
     private static FileProfile? BestMatch(Track t, List<FileProfile> profiles, Func<string, bool> isIgnored)
     {
         var tTitle = FuzzyText.Tokens(t.Title ?? t.RawTitle);
@@ -151,6 +174,7 @@ WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
             if (isIgnored(f.Path)) continue;
             var tj = FuzzyText.Jaccard(tTitle, f.Title);
             if (tj < 0.6) continue;
+            if (FuzzyText.Conflict(t.Artist, f.ArtistRaw)) continue; // different artist — not the same song
             var durClose = t.DurationSec is not null && f.Duration is not null
                            && Math.Abs(t.DurationSec.Value - f.Duration.Value) <= 7;
             var aj = FuzzyText.Jaccard(tArtist, f.Artist);
@@ -163,7 +187,7 @@ WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
 
     private static List<FileProfile> Profiles(SqliteConnection c) =>
         c.Query<LibraryFile>("SELECT * FROM library_files")
-            .Select(f => new FileProfile(f.Id, f.Path, FuzzyText.Tokens(f.Title), FuzzyText.Tokens(f.Artist), f.DurationSec))
+            .Select(f => new FileProfile(f.Id, f.Path, FuzzyText.Tokens(f.Title), FuzzyText.Tokens(f.Artist), f.Artist, f.DurationSec))
             .Where(p => p.Title.Count > 0)
             .ToList();
 
