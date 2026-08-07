@@ -163,14 +163,9 @@ WHERE id=@id",
                 return (true, "Pending", null);
 
             case "delete-download":
-                if (t.FilePath is { } delPath)
-                {
-                    try { if (File.Exists(delPath)) File.Delete(delPath); }
-                    catch (Exception ex) { log.LogWarning("delete failed for {Path}: {Msg}", delPath, ex.Message); }
-                    c.Execute("DELETE FROM library_files WHERE path=@p", new { p = delPath });
-                }
-                c.Execute("UPDATE tracks SET state='Pending', file_path=NULL, updated_at=datetime('now') WHERE id=@id", new { id = trackId });
-                return (true, "Pending", null);
+                // Delegate so a failed delete (e.g. a read-only master library) is reported instead of
+                // swallowed — this used to log a warning and still report success with the file intact.
+                return reconcile.DeleteFile(trackId, blacklist: false);
 
             default:
                 return (false, null, "unknown decision");

@@ -72,6 +72,16 @@ async function api<T>(path: string, opts?: RequestInit): Promise<T> {
   return r.json() as Promise<T>
 }
 
+// api() throws Error("<status> <body>"); show the server's own message, not the raw envelope.
+function errMsg(e: unknown): string {
+  const raw = String(e)
+  const brace = raw.indexOf('{')
+  if (brace >= 0) {
+    try { return JSON.parse(raw.slice(brace)).error ?? raw } catch { /* not JSON */ }
+  }
+  return raw
+}
+
 function fmtDur(s: number | null): string {
   if (!s) return '—'
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
@@ -141,6 +151,8 @@ export default function App() {
   const [yt, setYt] = useState<YtAudio | null>(null)
   // Two-step delete: the first click only arms this, so a stray click can't destroy a file.
   const [confirmDelFile, setConfirmDelFile] = useState<number | null>(null)
+  // Errors from row actions belong next to the row — the page-level banner is off-screen down here.
+  const [actionErr, setActionErr] = useState<{ id: number; msg: string } | null>(null)
 
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -305,6 +317,7 @@ export default function App() {
     setCands([])
     setYt(null)
     setConfirmDelFile(null)
+    setActionErr(null)
     try {
       const d = await api<{ lastAttempt: Attempt | null }>(`/api/tracks/${t.id}`)
       setDetail(d.lastAttempt)
@@ -344,8 +357,9 @@ export default function App() {
       await api(`/api/tracks/${id}/unlink`, { method: 'POST' })
       setNote('File kept on disk, link removed \u2014 track queued to download another version.')
       setOpenId(null)
+      setActionErr(null)
       await Promise.all([refreshMeta(), loadTracks()])
-    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+    } catch (e) { setActionErr({ id, msg: errMsg(e) }) } finally { setBusy(null) }
   }
 
   async function deleteFile(id: number, blacklist: boolean) {
@@ -358,8 +372,9 @@ export default function App() {
         : 'File deleted \u2014 track queued for a fresh download (Pending).')
       setConfirmDelFile(null)
       setOpenId(null)
+      setActionErr(null)
       await Promise.all([refreshMeta(), loadTracks()])
-    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+    } catch (e) { setActionErr({ id, msg: errMsg(e) }) } finally { setBusy(null) }
   }
 
   async function loadYtQuality(id: number) {
@@ -753,6 +768,9 @@ export default function App() {
                                   </>
                                 )}
                               </div>
+                            )}
+                            {actionErr?.id === t.id && (
+                              <div className="small warntext" style={{ marginTop: 6 }}>⚠ {actionErr.msg}</div>
                             )}
                             {t.externalId && (
                               <div className="detailbar">

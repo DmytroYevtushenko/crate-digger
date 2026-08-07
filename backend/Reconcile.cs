@@ -144,7 +144,13 @@ WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
         catch (Exception ex)
         {
             log.LogWarning("delete failed for {Path}: {Msg}", t.FilePath, ex.Message);
-            return (false, null, $"could not delete the file: {ex.Message}");
+            // A read-only mount is a deliberate setup (the master library is usually protected), so say
+            // that plainly instead of leaking a raw errno — and point at the action that does work.
+            var msg = ex.Message.Contains("Read-only", StringComparison.OrdinalIgnoreCase)
+                      || ex is UnauthorizedAccessException
+                ? "this folder is mounted read-only, so Crate can't delete from it — use \"Wrong version\" to unlink the file instead, or delete it yourself on the server"
+                : $"could not delete the file: {ex.Message}";
+            return (false, null, msg);
         }
 
         c.Execute("DELETE FROM library_files WHERE path=@p", new { p = t.FilePath });
