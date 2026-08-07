@@ -56,21 +56,53 @@ public sealed class ReconcileService(Db db, IConfiguration cfg, ILogger<Reconcil
                 var ex = c.QueryFirstOrDefault("SELECT mtime, size FROM library_files WHERE path=@p", new { p = f });
                 if (ex is not null && (long?)ex.mtime == mtime && (long?)ex.size == size) { skipped++; continue; }
 
-                var (artist, title, _, dur) = await ProbeAsync(f, ct);
+                var (artist, title, _, dur, bitrate) = await ProbeAsync(f, ct);
                 c.Execute(@"
-INSERT INTO library_files (path, artist, title, duration_sec, mtime, size, scanned_at)
-VALUES (@p, @a, @t, @d, @m, @s, datetime('now'))
+INSERT INTO library_files (path, artist, title, duration_sec, bitrate_kbps, mtime, size, scanned_at)
+VALUES (@p, @a, @t, @d, @b, @m, @s, datetime('now'))
 ON CONFLICT(path) DO UPDATE SET
-    artist=@a, title=@t, duration_sec=@d, mtime=@m, size=@s, scanned_at=datetime('now')",
-                    new { p = f, a = artist, t = title, d = dur, m = mtime, s = size });
+    artist=@a, title=@t, duration_sec=@d, bitrate_kbps=@b, mtime=@m, size=@s, scanned_at=datetime('now')",
+                    new { p = f, a = artist, t = title, d = dur, b = bitrate, m = mtime, s = size });
                 scanned++;
             }
         }
 
         var matched = Match();
+        using (var c = db.Open()) BackfillTrackBitrates(c);
         _last = $"scanned {scanned}, unchanged {skipped}, newly matched {matched}";
         log.LogInformation("Reconcile: {Res}", _last);
     }
+
+    /// <summary>
+    /// Indexes one freshly downloaded file into library_files right away (tags, duration, bitrate)
+    /// instead of waiting for the next full scan, and links it to the track. Returns its bitrate.
+    /// </summary>
+    public async Task<int?> IndexFileAsync(string path, long trackId, CancellationToken ct = default)
+    {
+        if (!File.Exists(path)) return null;
+        var (artist, title, _, dur, bitrate) = await ProbeAsync(path, ct);
+        var fi = new FileInfo(path);
+
+        using var c = db.Open();
+        c.Execute(@"
+INSERT INTO library_files (path, artist, title, duration_sec, bitrate_kbps, mtime, size, matched_track_id, scanned_at)
+VALUES (@p, @a, @t, @d, @b, @m, @s, @tid, datetime('now'))
+ON CONFLICT(path) DO UPDATE SET
+    artist=@a, title=@t, duration_sec=@d, bitrate_kbps=@b, mtime=@m, size=@s,
+    matched_track_id=@tid, scanned_at=datetime('now')",
+            new { p = path, a = artist, t = title, d = dur, b = bitrate,
+                  m = fi.LastWriteTimeUtc.Ticks, s = fi.Length, tid = trackId });
+        return bitrate;
+    }
+
+    // Carries the indexed file's bitrate onto the track in the same UPDATE that sets its file_path.
+    private const string BitrateFromLib = "bitrate_kbps=(SELECT bitrate_kbps FROM library_files WHERE path=@p), ";
+
+    // Fill in bitrate for tracks whose file is already indexed (e.g. downloaded before this was tracked).
+    private static void BackfillTrackBitrates(SqliteConnection c) =>
+        c.Execute(@"
+UPDATE tracks SET bitrate_kbps = (SELECT lf.bitrate_kbps FROM library_files lf WHERE lf.path = tracks.file_path)
+WHERE file_path IS NOT NULL AND bitrate_kbps IS NULL");
 
     private sealed record FileProfile(long Id, string Path, HashSet<string> Title, HashSet<string> Artist, int? Duration);
 
@@ -122,7 +154,7 @@ ON CONFLICT(path) DO UPDATE SET
             var best = BestMatch(t, profiles, p => ignored.Contains((t.Id, p)));
             if (best is null) continue;
 
-            c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id",
+            c.Execute("UPDATE tracks SET state='Manual', file_path=@p, " + BitrateFromLib + "updated_at=datetime('now') WHERE id=@id",
                 new { p = best.Path, id = t.Id });
             c.Execute("UPDATE library_files SET matched_track_id=@tid WHERE id=@fid", new { tid = t.Id, fid = best.Id });
             matched++;
@@ -146,7 +178,7 @@ ON CONFLICT(path) DO UPDATE SET
         var best = BestMatch(t, Profiles(c), ignored.Contains);
         if (best is null) return null;
 
-        c.Execute("UPDATE tracks SET file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
+        c.Execute("UPDATE tracks SET file_path=@p, " + BitrateFromLib + "updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
         c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = best.Id });
         return best.Path;
     }
@@ -195,7 +227,7 @@ ON CONFLICT(path) DO UPDATE SET
         var best = BestMatch(t, Profiles(c), ignored.Contains);
         if (best is null) return false;
 
-        c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
+        c.Execute("UPDATE tracks SET state='Manual', file_path=@p, " + BitrateFromLib + "updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
         c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = best.Id });
         return true;
     }
@@ -209,7 +241,7 @@ ON CONFLICT(path) DO UPDATE SET
         return roots.Where(Directory.Exists).Distinct();
     }
 
-    private async Task<(string?, string?, string?, int?)> ProbeAsync(string path, CancellationToken ct)
+    private async Task<(string?, string?, string?, int?, int?)> ProbeAsync(string path, CancellationToken ct)
     {
         try
         {
@@ -220,7 +252,7 @@ ON CONFLICT(path) DO UPDATE SET
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
-            foreach (var a in new[] { "-v", "error", "-show_entries", "format=duration:format_tags=artist,title,album", "-of", "json", path })
+            foreach (var a in new[] { "-v", "error", "-show_entries", "format=duration,bit_rate:format_tags=artist,title,album", "-of", "json", path })
                 psi.ArgumentList.Add(a);
 
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("cannot start ffprobe");
@@ -232,6 +264,10 @@ ON CONFLICT(path) DO UPDATE SET
             int? dur = fmt.TryGetProperty("duration", out var dEl)
                        && double.TryParse(dEl.GetString(), CultureInfo.InvariantCulture, out var dd)
                 ? (int)Math.Round(dd) : null;
+            // ffprobe reports bit_rate in bits/s; store kbps to match how quality is talked about.
+            int? bitrate = fmt.TryGetProperty("bit_rate", out var bEl)
+                           && long.TryParse(bEl.GetString(), CultureInfo.InvariantCulture, out var bb)
+                ? (int)(bb / 1000) : null;
             string? artist = null, title = null, album = null;
             if (fmt.TryGetProperty("tags", out var tags))
             {
@@ -239,12 +275,12 @@ ON CONFLICT(path) DO UPDATE SET
                 title = Tag(tags, "title");
                 album = Tag(tags, "album");
             }
-            return (artist, title, album, dur);
+            return (artist, title, album, dur, bitrate);
         }
         catch (Exception ex)
         {
             log.LogWarning("ffprobe failed for {Path}: {Msg}", path, ex.Message);
-            return (null, null, null, null);
+            return (null, null, null, null, null);
         }
     }
 

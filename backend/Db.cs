@@ -47,6 +47,9 @@ public sealed class Db
         c.Execute("UPDATE tracks SET created_at=updated_at WHERE created_at IS NULL");
         TryAddColumn(c, "library_files", "mtime", "INTEGER");
         TryAddColumn(c, "library_files", "size", "INTEGER");
+        // Audio bitrate, so lossy (e.g. YouTube-sourced) files are visible and sortable next to FLAC.
+        TryAddColumn(c, "library_files", "bitrate_kbps", "INTEGER");
+        TryAddColumn(c, "tracks", "bitrate_kbps", "INTEGER");
     }
 
     private static void TryAddColumn(SqliteConnection c, string table, string col, string decl)

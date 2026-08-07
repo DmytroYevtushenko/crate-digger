@@ -25,6 +25,7 @@ type Track = {
   durationSec: number | null
   state: string
   enriched: boolean
+  bitrateKbps: number | null
   filePath: string | null
   createdAt: string | null
   updatedAt: string | null
@@ -35,6 +36,7 @@ type CookieStatus = { present: boolean; updatedAt: string | null }
 type TracksPage = { total: number; items: Track[] }
 type Attempt = { result?: string; failure_reason?: string; finished_at?: string }
 type Cand = { path: string; artist: string | null; title: string | null; durationSec: number | null; score: number }
+type YtAudio = { bitrateKbps: number | null; codec: string | null; ext: string | null; sizeBytes: number | null }
 
 function audioUrl(path: string): string {
   return `/api/audio?path=${encodeURIComponent(path)}`
@@ -72,6 +74,12 @@ async function api<T>(path: string, opts?: RequestInit): Promise<T> {
 function fmtDur(s: number | null): string {
   if (!s) return '—'
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+// FLAC lands around 900-1100 kbps; YouTube-sourced audio is ~130-260. Showing the number lets
+// lossy copies be spotted (and sorted) against the lossless library.
+function fmtRate(k: number | null): string {
+  return k ? `${k}k` : '\u2014'
 }
 
 // Long titles used to stretch the table sideways; clip them and show the full text on hover.
@@ -123,6 +131,7 @@ export default function App() {
   const [cands, setCands] = useState<Cand[]>([])
   const preserveScroll = useRef<number | null>(null)
   const [retryQuality, setRetryQuality] = useState('any')
+  const [yt, setYt] = useState<YtAudio | null>(null)
 
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -285,6 +294,7 @@ export default function App() {
     setEdit({ artist: t.artist ?? '', title: t.title ?? '', album: t.album ?? '' })
     setDetail(null)
     setCands([])
+    setYt(null)
     try {
       const d = await api<{ lastAttempt: Attempt | null }>(`/api/tracks/${t.id}`)
       setDetail(d.lastAttempt)
@@ -314,6 +324,25 @@ export default function App() {
     try {
       await api(`/api/tracks/${id}/match`, { method: 'POST', body: JSON.stringify({ path }) })
       setOpenId(null); await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function loadYtQuality(id: number) {
+    setBusy(`ytq-${id}`)
+    try {
+      const r = await api<{ audio: YtAudio | null }>(`/api/tracks/${id}/youtube-quality`)
+      setYt(r.audio)
+      if (!r.audio) setNote('YouTube reports no audio stream for this track.')
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function downloadFromYoutube(id: number) {
+    setBusy(`ytd-${id}`)
+    preserveScroll.current = window.scrollY
+    try {
+      const r = await api<{ bitrate: number | null }>(`/api/tracks/${id}/youtube-download`, { method: 'POST' })
+      setNote(`Downloaded from YouTube${r.bitrate ? ` (~${r.bitrate} kbps)` : ''} \u2192 Verified.`)
+      await Promise.all([refreshMeta(), loadTracks()])
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
@@ -561,6 +590,7 @@ export default function App() {
                     <th className="sortable" onClick={() => toggleSort('title')}>Track{arrow('title')}</th>
                     <th className="sortable" onClick={() => toggleSort('album')}>Album{arrow('album')}</th>
                     <th>Len</th>
+                    <th className="sortable" onClick={() => toggleSort('bitrate')} title="Audio bitrate — FLAC is ~1000k, YouTube-sourced ~130-260k">Rate{arrow('bitrate')}</th>
                     <th>Age</th>
                     <th className="sortable" onClick={() => toggleSort('state')}>State{arrow('state')}</th>
                     <th></th>
@@ -574,6 +604,8 @@ export default function App() {
                         <td>{clip(t.title) ?? '—'}</td>
                         <td>{clip(t.album) ?? (t.enriched ? '—' : <span className="muted">…</span>)}</td>
                         <td>{fmtDur(t.durationSec)}</td>
+                        <td className={t.bitrateKbps && t.bitrateKbps < 500 ? 'lossy' : 'muted'}
+                            title={t.bitrateKbps ? `${t.bitrateKbps} kbps` : undefined}>{fmtRate(t.bitrateKbps)}</td>
                         <td className="muted" title={t.createdAt ?? ''}>{relAge(t.createdAt)}</td>
                         <td><span className={`badge s-${t.state.toLowerCase()}`}>{stateLabel(t.state)}</span></td>
                         <td onClick={(e) => e.stopPropagation()}>
@@ -604,7 +636,7 @@ export default function App() {
                       </tr>
                       {openId === t.id && (
                         <tr className="detailrow">
-                          <td colSpan={7}>
+                          <td colSpan={8}>
                             <div className="editrow">
                               <input value={edit.artist} onChange={(e) => setEdit((f) => ({ ...f, artist: e.target.value }))} placeholder="Artist" />
                               <input value={edit.title} onChange={(e) => setEdit((f) => ({ ...f, title: e.target.value }))} placeholder="Title" />
@@ -634,6 +666,26 @@ export default function App() {
                                 {busy === `dl1-${t.id}` ? '…' : 'Retry download'}
                               </button>
                             </div>
+                            {t.externalId && (
+                              <div className="detailbar">
+                                <span className="muted small">Not on Soulseek?</span>
+                                <button className="mini ghost" disabled={busy === `ytq-${t.id}`} onClick={() => loadYtQuality(t.id)}
+                                  title="Check what audio quality YouTube has for this track">
+                                  {busy === `ytq-${t.id}` ? '…' : 'Check YouTube quality'}
+                                </button>
+                                {yt && (
+                                  <span className="small">
+                                    {yt.bitrateKbps ? `~${yt.bitrateKbps} kbps` : 'bitrate unknown'}
+                                    {yt.codec && ` · ${yt.codec}`}
+                                    {yt.sizeBytes && ` · ${(yt.sizeBytes / 1048576).toFixed(1)} MB`}
+                                  </span>
+                                )}
+                                <button className="mini" disabled={busy === `ytd-${t.id}`} onClick={() => downloadFromYoutube(t.id)}
+                                  title="Download the audio from this track's own YouTube video (lossy — use when Soulseek has nothing)">
+                                  {busy === `ytd-${t.id}` ? '…' : '⬇ Download from YouTube'}
+                                </button>
+                              </div>
+                            )}
                             {cands.length > 0 && (
                               <ul className="cands">
                                 {cands.map((cnd) => (

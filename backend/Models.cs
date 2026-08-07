@@ -35,6 +35,7 @@ public sealed class Track
     public string State { get; set; } = "Pending";
     public bool Enriched { get; set; }
     public string? FilePath { get; set; }
+    public int? BitrateKbps { get; set; }
     public string? CreatedAt { get; set; }
     public string? UpdatedAt { get; set; }
 }
@@ -51,6 +52,7 @@ public sealed class LibraryFile
     public string? Artist { get; set; }
     public string? Title { get; set; }
     public int? DurationSec { get; set; }
+    public int? BitrateKbps { get; set; }
     public string? Fingerprint { get; set; }
     public long? Mtime { get; set; }
     public long? Size { get; set; }

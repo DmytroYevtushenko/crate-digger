@@ -149,6 +149,20 @@ app.MapPost("/api/tracks/{id:long}/manual-review", (long id, ManualReviewInput i
     return error == "unknown decision" ? Results.BadRequest(new { error }) : Results.NotFound(new { error });
 });
 
+// What quality YouTube has for this track — shown before you commit to the fallback download.
+app.MapGet("/api/tracks/{id:long}/youtube-quality", async (long id, CancellationToken ct) =>
+{
+    var (audio, error) = await downloader.YoutubeQualityAsync(id, ct);
+    return error is null ? Results.Ok(new { audio }) : Results.NotFound(new { error });
+});
+
+// Fallback for tracks Soulseek doesn't carry: grab the audio from the track's own YouTube video.
+app.MapPost("/api/tracks/{id:long}/youtube-download", async (long id, CancellationToken ct) =>
+{
+    var (ok, path, bitrate, error) = await downloader.DownloadFromYoutubeAsync(id, ct);
+    return ok ? Results.Ok(new { id, path, bitrate }) : Results.BadRequest(new { error });
+});
+
 // Review-queue actions: confirm a Mismatch as OK, reject (blacklist), or retry a Failed/Mismatch.
 app.MapPost("/api/tracks/{id:long}/{action}", (long id, string action) =>
 {
@@ -233,7 +247,7 @@ app.MapPost("/api/tracks/{id:long}/match", (long id, MatchInput m) =>
 {
     if (string.IsNullOrWhiteSpace(m.Path)) return Results.BadRequest(new { error = "path required" });
     using var c = db.Open();
-    var n = c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = m.Path, id });
+    var n = c.Execute("UPDATE tracks SET state='Manual', file_path=@p, bitrate_kbps=(SELECT bitrate_kbps FROM library_files WHERE path=@p), updated_at=datetime('now') WHERE id=@id", new { p = m.Path, id });
     c.Execute("UPDATE library_files SET matched_track_id=@id WHERE path=@p", new { id, p = m.Path });
     return n > 0 ? Results.Ok(new { id, state = "Manual" }) : Results.NotFound();
 });
@@ -288,6 +302,8 @@ app.MapGet("/api/tracks", (int? limit, int? offset, long? sourceId, string? stat
         "title" => "title COLLATE NOCASE",
         "album" => "album COLLATE NOCASE",
         "state" => "state COLLATE NOCASE",
+        // Unknown bitrate sorts last rather than ahead of every real value.
+        "bitrate" => "bitrate_kbps IS NULL, bitrate_kbps DESC",
         _ => "updated_at DESC",
     };
     var pars = new { sourceId, state, q = "%" + (q ?? "") + "%", lim, off };

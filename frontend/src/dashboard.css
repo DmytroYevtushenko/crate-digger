@@ -228,3 +228,6 @@ button.danger { background: var(--bad); color: #fff; }
     --muted: #6b7280;
   }
 }
+
+/* Lossy bitrate stands out against the lossless library (FLAC ~1000k). */
+.lossy { color: #e3b341; }
