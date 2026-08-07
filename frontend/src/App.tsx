@@ -26,6 +26,7 @@ type Track = {
   state: string
   enriched: boolean
   bitrateKbps: number | null
+  sizeBytes: number | null
   filePath: string | null
   createdAt: string | null
   updatedAt: string | null
@@ -82,6 +83,11 @@ function fmtRate(k: number | null): string {
   return k ? `${k}k` : '\u2014'
 }
 
+function fmtSize(b: number | null): string {
+  if (!b) return '\u2014'
+  return b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`
+}
+
 // Long titles used to stretch the table sideways; clip them and show the full text on hover.
 function clip(v: string | null | undefined) {
   if (!v) return null
@@ -132,6 +138,8 @@ export default function App() {
   const preserveScroll = useRef<number | null>(null)
   const [retryQuality, setRetryQuality] = useState('any')
   const [yt, setYt] = useState<YtAudio | null>(null)
+  // Two-step delete: the first click only arms this, so a stray click can't destroy a file.
+  const [confirmDelFile, setConfirmDelFile] = useState<number | null>(null)
 
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -295,6 +303,7 @@ export default function App() {
     setDetail(null)
     setCands([])
     setYt(null)
+    setConfirmDelFile(null)
     try {
       const d = await api<{ lastAttempt: Attempt | null }>(`/api/tracks/${t.id}`)
       setDetail(d.lastAttempt)
@@ -324,6 +333,20 @@ export default function App() {
     try {
       await api(`/api/tracks/${id}/match`, { method: 'POST', body: JSON.stringify({ path }) })
       setOpenId(null); await Promise.all([refreshMeta(), loadTracks()])
+    } catch (e) { setErr(String(e)) } finally { setBusy(null) }
+  }
+
+  async function deleteFile(id: number, blacklist: boolean) {
+    setBusy(`delf-${id}`)
+    preserveScroll.current = window.scrollY
+    try {
+      await api(`/api/tracks/${id}/delete-file`, { method: 'POST', body: JSON.stringify({ blacklist }) })
+      setNote(blacklist
+        ? 'File deleted \u2014 this track will not be downloaded again (Blacklisted).'
+        : 'File deleted \u2014 track queued for a fresh download (Pending).')
+      setConfirmDelFile(null)
+      setOpenId(null)
+      await Promise.all([refreshMeta(), loadTracks()])
     } catch (e) { setErr(String(e)) } finally { setBusy(null) }
   }
 
@@ -591,6 +614,7 @@ export default function App() {
                     <th className="sortable" onClick={() => toggleSort('album')}>Album{arrow('album')}</th>
                     <th>Len</th>
                     <th className="sortable" onClick={() => toggleSort('bitrate')} title="Audio bitrate — FLAC is ~1000k, YouTube-sourced ~130-260k">Rate{arrow('bitrate')}</th>
+                    <th className="sortable" onClick={() => toggleSort('size')} title="File size on disk">Size{arrow('size')}</th>
                     <th>Age</th>
                     <th className="sortable" onClick={() => toggleSort('state')}>State{arrow('state')}</th>
                     <th></th>
@@ -606,6 +630,7 @@ export default function App() {
                         <td>{fmtDur(t.durationSec)}</td>
                         <td className={t.bitrateKbps && t.bitrateKbps < 500 ? 'lossy' : 'muted'}
                             title={t.bitrateKbps ? `${t.bitrateKbps} kbps` : undefined}>{fmtRate(t.bitrateKbps)}</td>
+                        <td className="muted">{fmtSize(t.sizeBytes)}</td>
                         <td className="muted" title={t.createdAt ?? ''}>{relAge(t.createdAt)}</td>
                         <td><span className={`badge s-${t.state.toLowerCase()}`}>{stateLabel(t.state)}</span></td>
                         <td onClick={(e) => e.stopPropagation()}>
@@ -636,7 +661,7 @@ export default function App() {
                       </tr>
                       {openId === t.id && (
                         <tr className="detailrow">
-                          <td colSpan={8}>
+                          <td colSpan={9}>
                             <div className="editrow">
                               <input value={edit.artist} onChange={(e) => setEdit((f) => ({ ...f, artist: e.target.value }))} placeholder="Artist" />
                               <input value={edit.title} onChange={(e) => setEdit((f) => ({ ...f, title: e.target.value }))} placeholder="Title" />
@@ -666,6 +691,33 @@ export default function App() {
                                 {busy === `dl1-${t.id}` ? '…' : 'Retry download'}
                               </button>
                             </div>
+                            {t.filePath && (
+                              <div className="detailbar">
+                                {confirmDelFile === t.id ? (
+                                  <>
+                                    <span className="small warntext">
+                                      Delete <code>{t.filePath.split('/').pop()}</code> from disk permanently?
+                                    </span>
+                                    <button className="mini danger" disabled={busy === `delf-${t.id}`}
+                                      onClick={() => deleteFile(t.id, false)}
+                                      title="Delete the file and queue this track for a fresh download">
+                                      Delete &amp; re-download
+                                    </button>
+                                    <button className="mini danger" disabled={busy === `delf-${t.id}`}
+                                      onClick={() => deleteFile(t.id, true)}
+                                      title="Delete the file and never fetch this track again">
+                                      Delete &amp; blacklist
+                                    </button>
+                                    <button className="mini ghost" onClick={() => setConfirmDelFile(null)}>Cancel</button>
+                                  </>
+                                ) : (
+                                  <button className="mini ghost" onClick={() => setConfirmDelFile(t.id)}
+                                    title="Remove this file from disk (bad quality or wrong version)">
+                                    🗑 Delete file…
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             {t.externalId && (
                               <div className="detailbar">
                                 <span className="muted small">Not on Soulseek?</span>

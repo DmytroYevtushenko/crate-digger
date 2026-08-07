@@ -20,7 +20,7 @@ body {
 }
 
 .wrap {
-  max-width: 1240px;
+  max-width: 1800px;
   margin: 0 auto;
   padding: 24px 14px 40px;
 }
@@ -231,3 +231,7 @@ button.danger { background: var(--bad); color: #fff; }
 
 /* Lossy bitrate stands out against the lossless library (FLAC ~1000k). */
 .lossy { color: #e3b341; }
+
+/* Two-step delete: the armed state should read as destructive, not as another action. */
+.warntext { color: var(--bad); }
+.warntext code { word-break: break-all; }

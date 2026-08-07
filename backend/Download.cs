@@ -150,15 +150,17 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
                 break;
         }
 
-        // Index the new file right away so its bitrate is known and it's matchable without a full rescan.
+        // Index the new file right away so its bitrate/size are known and it's matchable without a rescan.
         int? bitrate = null;
+        long? size = null;
         if (finalPath is not null && res.Outcome == DlOutcome.Downloaded)
-            bitrate = await reconcile.IndexFileAsync(finalPath, t.Id, ct);
+            (bitrate, size) = await reconcile.IndexFileAsync(finalPath, t.Id, ct);
 
         using (var c = db.Open())
         {
-            c.Execute("UPDATE tracks SET state=@s, file_path=@p, bitrate_kbps=COALESCE(@b, bitrate_kbps), updated_at=datetime('now') WHERE id=@id",
-                new { s = state, p = finalPath, b = bitrate, id = t.Id });
+            c.Execute(@"UPDATE tracks SET state=@s, file_path=@p, bitrate_kbps=COALESCE(@b, bitrate_kbps),
+                        size_bytes=COALESCE(@sz, size_bytes), updated_at=datetime('now') WHERE id=@id",
+                new { s = state, p = finalPath, b = bitrate, sz = size, id = t.Id });
             c.Execute(@"UPDATE download_attempts SET finished_at=datetime('now'), result=@r, failure_reason=@f
                         WHERE id=(SELECT MAX(id) FROM download_attempts WHERE track_id=@id)",
                 new { r = res.Outcome.ToString(), f = detail, id = t.Id });
@@ -211,30 +213,31 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         }
         catch (Exception ex)
         {
-            Finish(t.Id, "Failed", null, null, "YoutubeError", ex.Message);
+            Finish(t.Id, "Failed", null, null, null, "YoutubeError", ex.Message);
             return (false, null, null, ex.Message);
         }
 
         if (path is null)
         {
-            Finish(t.Id, "Failed", null, null, "YoutubeError", "yt-dlp produced no audio file");
+            Finish(t.Id, "Failed", null, null, null, "YoutubeError", "yt-dlp produced no audio file");
             return (false, null, null, "yt-dlp produced no audio file");
         }
 
         await tagger.TagAsync(path, t, ct);
-        var bitrate = await reconcile.IndexFileAsync(path, t.Id, ct);
+        var (bitrate, size) = await reconcile.IndexFileAsync(path, t.Id, ct);
         // The YouTube video *is* the track's source of truth here, so there is nothing to verify it
         // against — a fingerprint check would just compare the file to itself.
-        Finish(t.Id, "Verified", path, bitrate, "YoutubeDownloaded", $"from YouTube{(bitrate is null ? "" : $" ~{bitrate} kbps")}");
+        Finish(t.Id, "Verified", path, bitrate, size, "YoutubeDownloaded", $"from YouTube{(bitrate is null ? "" : $" ~{bitrate} kbps")}");
         log.LogInformation("Track {Id} '{Artist} - {Title}' downloaded from YouTube ({Br} kbps)", t.Id, t.Artist, t.Title, bitrate);
         return (true, path, bitrate, null);
     }
 
-    private void Finish(long id, string state, string? path, int? bitrate, string result, string? detail)
+    private void Finish(long id, string state, string? path, int? bitrate, long? size, string result, string? detail)
     {
         using var c = db.Open();
-        c.Execute("UPDATE tracks SET state=@s, file_path=COALESCE(@p, file_path), bitrate_kbps=COALESCE(@b, bitrate_kbps), updated_at=datetime('now') WHERE id=@id",
-            new { s = state, p = path, b = bitrate, id });
+        c.Execute(@"UPDATE tracks SET state=@s, file_path=COALESCE(@p, file_path), bitrate_kbps=COALESCE(@b, bitrate_kbps),
+                    size_bytes=COALESCE(@sz, size_bytes), updated_at=datetime('now') WHERE id=@id",
+            new { s = state, p = path, b = bitrate, sz = size, id });
         c.Execute(@"UPDATE download_attempts SET finished_at=datetime('now'), result=@r, failure_reason=@f
                     WHERE id=(SELECT MAX(id) FROM download_attempts WHERE track_id=@id)",
             new { r = result, f = detail, id });

@@ -36,6 +36,7 @@ public sealed class Track
     public bool Enriched { get; set; }
     public string? FilePath { get; set; }
     public int? BitrateKbps { get; set; }
+    public long? SizeBytes { get; set; }
     public string? CreatedAt { get; set; }
     public string? UpdatedAt { get; set; }
 }
@@ -44,6 +45,7 @@ public record TrackEdit(string? Artist, string? Title, string? Album);
 public record MatchInput(string Path);
 public record DlOverride(string? Cond, string? Pref);
 public record ManualReviewInput(string Decision);
+public record DeleteFileInput(bool Blacklist);
 
 public sealed class LibraryFile
 {

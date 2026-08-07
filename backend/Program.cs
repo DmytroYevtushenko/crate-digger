@@ -163,6 +163,14 @@ app.MapPost("/api/tracks/{id:long}/youtube-download", async (long id, Cancellati
     return ok ? Results.Ok(new { id, path, bitrate }) : Results.BadRequest(new { error });
 });
 
+// Delete a track's file from disk (bad quality / wrong version) and either queue a fresh download
+// or blacklist it. Destructive, so the UI asks for a second click before calling this.
+app.MapPost("/api/tracks/{id:long}/delete-file", (long id, DeleteFileInput? input) =>
+{
+    var (ok, state, error) = reconcile.DeleteFile(id, input?.Blacklist ?? false);
+    return ok ? Results.Ok(new { id, state }) : Results.BadRequest(new { error });
+});
+
 // Review-queue actions: confirm a Mismatch as OK, reject (blacklist), or retry a Failed/Mismatch.
 app.MapPost("/api/tracks/{id:long}/{action}", (long id, string action) =>
 {
@@ -302,8 +310,9 @@ app.MapGet("/api/tracks", (int? limit, int? offset, long? sourceId, string? stat
         "title" => "title COLLATE NOCASE",
         "album" => "album COLLATE NOCASE",
         "state" => "state COLLATE NOCASE",
-        // Unknown bitrate sorts last rather than ahead of every real value.
+        // Unknown bitrate/size sorts last rather than ahead of every real value.
         "bitrate" => "bitrate_kbps IS NULL, bitrate_kbps DESC",
+        "size" => "size_bytes IS NULL, size_bytes DESC",
         _ => "updated_at DESC",
     };
     var pars = new { sourceId, state, q = "%" + (q ?? "") + "%", lim, off };

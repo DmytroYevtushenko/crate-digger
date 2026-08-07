@@ -50,6 +50,7 @@ public sealed class Db
         // Audio bitrate, so lossy (e.g. YouTube-sourced) files are visible and sortable next to FLAC.
         TryAddColumn(c, "library_files", "bitrate_kbps", "INTEGER");
         TryAddColumn(c, "tracks", "bitrate_kbps", "INTEGER");
+        TryAddColumn(c, "tracks", "size_bytes", "INTEGER");
     }
 
     private static void TryAddColumn(SqliteConnection c, string table, string col, string decl)

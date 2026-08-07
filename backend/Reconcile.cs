@@ -68,18 +68,18 @@ ON CONFLICT(path) DO UPDATE SET
         }
 
         var matched = Match();
-        using (var c = db.Open()) BackfillTrackBitrates(c);
+        using (var c = db.Open()) BackfillTrackStats(c);
         _last = $"scanned {scanned}, unchanged {skipped}, newly matched {matched}";
         log.LogInformation("Reconcile: {Res}", _last);
     }
 
     /// <summary>
     /// Indexes one freshly downloaded file into library_files right away (tags, duration, bitrate)
-    /// instead of waiting for the next full scan, and links it to the track. Returns its bitrate.
+    /// instead of waiting for the next full scan, and links it to the track. Returns its bitrate and size.
     /// </summary>
-    public async Task<int?> IndexFileAsync(string path, long trackId, CancellationToken ct = default)
+    public async Task<(int? Bitrate, long? Size)> IndexFileAsync(string path, long trackId, CancellationToken ct = default)
     {
-        if (!File.Exists(path)) return null;
+        if (!File.Exists(path)) return (null, null);
         var (artist, title, _, dur, bitrate) = await ProbeAsync(path, ct);
         var fi = new FileInfo(path);
 
@@ -92,17 +92,48 @@ ON CONFLICT(path) DO UPDATE SET
     matched_track_id=@tid, scanned_at=datetime('now')",
             new { p = path, a = artist, t = title, d = dur, b = bitrate,
                   m = fi.LastWriteTimeUtc.Ticks, s = fi.Length, tid = trackId });
-        return bitrate;
+        return (bitrate, fi.Length);
     }
 
-    // Carries the indexed file's bitrate onto the track in the same UPDATE that sets its file_path.
-    private const string BitrateFromLib = "bitrate_kbps=(SELECT bitrate_kbps FROM library_files WHERE path=@p), ";
+    // Carries the indexed file's bitrate and size onto the track in the same UPDATE that sets file_path.
+    private const string StatsFromLib =
+        "bitrate_kbps=(SELECT bitrate_kbps FROM library_files WHERE path=@p), " +
+        "size_bytes=(SELECT size FROM library_files WHERE path=@p), ";
 
-    // Fill in bitrate for tracks whose file is already indexed (e.g. downloaded before this was tracked).
-    private static void BackfillTrackBitrates(SqliteConnection c) =>
+    // Fill in bitrate/size for tracks whose file is already indexed (e.g. linked before this was tracked).
+    private static void BackfillTrackStats(SqliteConnection c) =>
         c.Execute(@"
-UPDATE tracks SET bitrate_kbps = (SELECT lf.bitrate_kbps FROM library_files lf WHERE lf.path = tracks.file_path)
-WHERE file_path IS NOT NULL AND bitrate_kbps IS NULL");
+UPDATE tracks SET
+    bitrate_kbps = COALESCE(bitrate_kbps, (SELECT lf.bitrate_kbps FROM library_files lf WHERE lf.path = tracks.file_path)),
+    size_bytes   = COALESCE(size_bytes,   (SELECT lf.size         FROM library_files lf WHERE lf.path = tracks.file_path))
+WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
+
+    /// <summary>
+    /// Deletes a track's file from disk and drops it from the library index. The track then either
+    /// goes back in the download queue (blacklist=false) or is never fetched again (blacklist=true).
+    /// Used to get rid of a bad-quality or plain wrong file that a match/download landed on.
+    /// </summary>
+    public (bool Ok, string? State, string? Error) DeleteFile(long trackId, bool blacklist)
+    {
+        using var c = db.Open();
+        var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
+        if (t is null) return (false, null, "track not found");
+        if (t.FilePath is null) return (false, null, "track has no file to delete");
+
+        try { if (File.Exists(t.FilePath)) File.Delete(t.FilePath); }
+        catch (Exception ex)
+        {
+            log.LogWarning("delete failed for {Path}: {Msg}", t.FilePath, ex.Message);
+            return (false, null, $"could not delete the file: {ex.Message}");
+        }
+
+        c.Execute("DELETE FROM library_files WHERE path=@p", new { p = t.FilePath });
+        var state = blacklist ? "Blacklisted" : "Pending";
+        c.Execute(@"UPDATE tracks SET state=@s, file_path=NULL, bitrate_kbps=NULL, size_bytes=NULL,
+                    updated_at=datetime('now') WHERE id=@id", new { s = state, id = trackId });
+        log.LogInformation("Deleted file for track {Id} ({Path}) => {State}", trackId, t.FilePath, state);
+        return (true, state, null);
+    }
 
     private sealed record FileProfile(long Id, string Path, HashSet<string> Title, HashSet<string> Artist, int? Duration);
 
@@ -154,7 +185,7 @@ WHERE file_path IS NOT NULL AND bitrate_kbps IS NULL");
             var best = BestMatch(t, profiles, p => ignored.Contains((t.Id, p)));
             if (best is null) continue;
 
-            c.Execute("UPDATE tracks SET state='Manual', file_path=@p, " + BitrateFromLib + "updated_at=datetime('now') WHERE id=@id",
+            c.Execute("UPDATE tracks SET state='Manual', file_path=@p, " + StatsFromLib + "updated_at=datetime('now') WHERE id=@id",
                 new { p = best.Path, id = t.Id });
             c.Execute("UPDATE library_files SET matched_track_id=@tid WHERE id=@fid", new { tid = t.Id, fid = best.Id });
             matched++;
@@ -178,7 +209,7 @@ WHERE file_path IS NOT NULL AND bitrate_kbps IS NULL");
         var best = BestMatch(t, Profiles(c), ignored.Contains);
         if (best is null) return null;
 
-        c.Execute("UPDATE tracks SET file_path=@p, " + BitrateFromLib + "updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
+        c.Execute("UPDATE tracks SET file_path=@p, " + StatsFromLib + "updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
         c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = best.Id });
         return best.Path;
     }
@@ -227,7 +258,7 @@ WHERE file_path IS NOT NULL AND bitrate_kbps IS NULL");
         var best = BestMatch(t, Profiles(c), ignored.Contains);
         if (best is null) return false;
 
-        c.Execute("UPDATE tracks SET state='Manual', file_path=@p, " + BitrateFromLib + "updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
+        c.Execute("UPDATE tracks SET state='Manual', file_path=@p, " + StatsFromLib + "updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
         c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = best.Id });
         return true;
     }
