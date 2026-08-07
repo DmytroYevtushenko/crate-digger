@@ -653,6 +653,12 @@ export default function App() {
                               <button className="mini ghost" title="Don't want it — never retry (Blacklisted)" onClick={() => trackAction(t.id, 'reject')}>✕</button>
                             </>
                           )}
+                          {t.state === 'Manual' && (
+                            <>
+                              <button className="mini" title="Listened — this is the right track (Verified)" onClick={() => trackAction(t.id, 'confirm')}>✓</button>
+                              <button className="mini ghost" title="Don't want it — never fetch again (Blacklisted)" onClick={() => trackAction(t.id, 'reject')}>✕</button>
+                            </>
+                          )}
                           {t.state === 'Failed' && (
                             <>
                               <button className="mini" title="Retry download" onClick={() => trackAction(t.id, 'retry')}>↻</button>
@@ -703,6 +709,15 @@ export default function App() {
                                 {busy === `dl1-${t.id}` ? '…' : 'Retry download'}
                               </button>
                             </div>
+                            {t.filePath && t.state !== 'Verified' && (
+                              <div className="detailbar">
+                                <button className="mini" disabled={busy === `t-confirm-${t.id}`}
+                                  onClick={() => trackAction(t.id, 'confirm')}
+                                  title="Sounds right — mark this track Verified">
+                                  {busy === `t-confirm-${t.id}` ? '…' : '✓ Sounds right — mark Verified'}
+                                </button>
+                              </div>
+                            )}
                             {t.filePath && (
                               <div className="detailbar">
                                 {confirmDelFile === t.id ? (
