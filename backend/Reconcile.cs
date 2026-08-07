@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
 
 namespace Crate.Api;
 
@@ -73,17 +74,42 @@ ON CONFLICT(path) DO UPDATE SET
 
     private sealed record FileProfile(long Id, string Path, HashSet<string> Title, HashSet<string> Artist, int? Duration);
 
+    // The shared auto-match rule: strong title overlap, confirmed by duration OR artist.
+    private static FileProfile? BestMatch(Track t, List<FileProfile> profiles, Func<string, bool> isIgnored)
+    {
+        var tTitle = FuzzyText.Tokens(t.Title ?? t.RawTitle);
+        if (tTitle.Count == 0) return null;
+        var tArtist = FuzzyText.Tokens(t.Artist);
+
+        FileProfile? best = null;
+        double bestScore = 0;
+        foreach (var f in profiles)
+        {
+            if (isIgnored(f.Path)) continue;
+            var tj = FuzzyText.Jaccard(tTitle, f.Title);
+            if (tj < 0.6) continue;
+            var durClose = t.DurationSec is not null && f.Duration is not null
+                           && Math.Abs(t.DurationSec.Value - f.Duration.Value) <= 7;
+            var aj = FuzzyText.Jaccard(tArtist, f.Artist);
+            if (!durClose && aj < 0.34) continue; // need duration OR artist to confirm
+            var score = tj + (durClose ? 0.3 : 0) + aj * 0.3;
+            if (score > bestScore) { bestScore = score; best = f; }
+        }
+        return best;
+    }
+
+    private static List<FileProfile> Profiles(SqliteConnection c) =>
+        c.Query<LibraryFile>("SELECT * FROM library_files")
+            .Select(f => new FileProfile(f.Id, f.Path, FuzzyText.Tokens(f.Title), FuzzyText.Tokens(f.Artist), f.DurationSec))
+            .Where(p => p.Title.Count > 0)
+            .ToList();
+
     // Fuzzy-match unmatched library files to Pending/Failed tracks.
     private int Match()
     {
         using var c = db.Open();
-        var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
+        var profiles = Profiles(c);
         var tracks = c.Query<Track>("SELECT * FROM tracks WHERE state IN ('Pending','Failed')").ToList();
-
-        var profiles = files
-            .Select(f => new FileProfile(f.Id, f.Path, FuzzyText.Tokens(f.Title), FuzzyText.Tokens(f.Artist), f.DurationSec))
-            .Where(p => p.Title.Count > 0)
-            .ToList();
 
         // Paths a manual-review decision already rejected for a given track — never re-offer them.
         var ignored = c.Query("SELECT track_id, path FROM track_ignored_files")
@@ -93,24 +119,7 @@ ON CONFLICT(path) DO UPDATE SET
         var matched = 0;
         foreach (var t in tracks)
         {
-            var tTitle = FuzzyText.Tokens(t.Title ?? t.RawTitle);
-            if (tTitle.Count == 0) continue;
-            var tArtist = FuzzyText.Tokens(t.Artist);
-
-            FileProfile? best = null;
-            double bestScore = 0;
-            foreach (var f in profiles)
-            {
-                if (ignored.Contains((t.Id, f.Path))) continue;
-                var tj = FuzzyText.Jaccard(tTitle, f.Title);
-                if (tj < 0.6) continue;
-                var durClose = t.DurationSec is not null && f.Duration is not null
-                               && Math.Abs(t.DurationSec.Value - f.Duration.Value) <= 7;
-                var aj = FuzzyText.Jaccard(tArtist, f.Artist);
-                if (!durClose && aj < 0.34) continue; // need duration OR artist to confirm
-                var score = tj + (durClose ? 0.3 : 0) + aj * 0.3;
-                if (score > bestScore) { bestScore = score; best = f; }
-            }
+            var best = BestMatch(t, profiles, p => ignored.Contains((t.Id, p)));
             if (best is null) continue;
 
             c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id",
@@ -119,6 +128,27 @@ ON CONFLICT(path) DO UPDATE SET
             matched++;
         }
         return matched;
+    }
+
+    /// <summary>
+    /// Locates the library file for a track that is believed to already be present but has no
+    /// file_path — e.g. sldl ended the attempt with "already present" without reporting which file
+    /// it matched. Links the file (path + matched_track_id) but leaves the track's state alone.
+    /// Returns the path, or null if nothing in the library matches.
+    /// </summary>
+    public string? LinkExistingFile(long trackId)
+    {
+        using var c = db.Open();
+        var t = c.QuerySingleOrDefault<Track>("SELECT * FROM tracks WHERE id=@id", new { id = trackId });
+        if (t is null) return null;
+
+        var ignored = c.Query<string>("SELECT path FROM track_ignored_files WHERE track_id=@id", new { id = trackId }).ToHashSet();
+        var best = BestMatch(t, Profiles(c), ignored.Contains);
+        if (best is null) return null;
+
+        c.Execute("UPDATE tracks SET file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
+        c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = best.Id });
+        return best.Path;
     }
 
     // Fuzzy library candidates for a track (below the auto-match threshold) — for manual pick in the UI.
@@ -160,31 +190,13 @@ ON CONFLICT(path) DO UPDATE SET
         // Only tracks with no file yet are eligible — editing tags on a track that's already
         // Manual/ManualReview/Verified/etc. must not silently re-link or flip its state/review queue.
         if (t.State is not ("Pending" or "Failed")) return false;
-        var tTitle = FuzzyText.Tokens(t.Title ?? t.RawTitle);
-        if (tTitle.Count == 0) return false;
-        var tArtist = FuzzyText.Tokens(t.Artist);
 
         var ignored = c.Query<string>("SELECT path FROM track_ignored_files WHERE track_id=@id", new { id = trackId }).ToHashSet();
-        var files = c.Query<LibraryFile>("SELECT * FROM library_files").ToList();
-        long bestId = 0; string? bestPath = null; double bestScore = 0;
-        foreach (var f in files)
-        {
-            if (ignored.Contains(f.Path)) continue;
-            var ft = FuzzyText.Tokens(f.Title);
-            if (ft.Count == 0) continue;
-            var tj = FuzzyText.Jaccard(tTitle, ft);
-            if (tj < 0.6) continue;
-            var durClose = t.DurationSec is not null && f.DurationSec is not null
-                           && Math.Abs(t.DurationSec.Value - f.DurationSec.Value) <= 7;
-            var aj = FuzzyText.Jaccard(tArtist, FuzzyText.Tokens(f.Artist));
-            if (!durClose && aj < 0.34) continue;
-            var score = tj + (durClose ? 0.3 : 0) + aj * 0.3;
-            if (score > bestScore) { bestScore = score; bestId = f.Id; bestPath = f.Path; }
-        }
-        if (bestPath is null) return false;
+        var best = BestMatch(t, Profiles(c), ignored.Contains);
+        if (best is null) return false;
 
-        c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = bestPath, id = trackId });
-        c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = bestId });
+        c.Execute("UPDATE tracks SET state='Manual', file_path=@p, updated_at=datetime('now') WHERE id=@id", new { p = best.Path, id = trackId });
+        c.Execute("UPDATE library_files SET matched_track_id=@id WHERE id=@fid", new { id = trackId, fid = best.Id });
         return true;
     }
 

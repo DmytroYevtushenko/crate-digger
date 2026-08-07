@@ -9,7 +9,7 @@ namespace Crate.Api;
 /// moves the track to Verified (confirmed good); a mismatch flags it as ManualReview for the
 /// user to resolve via Resolve().
 /// </summary>
-public sealed class ManualVerifyService(Db db, Verifier verifier, YtDlp ytdlp, ILogger<ManualVerifyService> log)
+public sealed class ManualVerifyService(Db db, Verifier verifier, YtDlp ytdlp, ReconcileService reconcile, ILogger<ManualVerifyService> log)
 {
     private volatile bool _running;
     private string? _last;
@@ -34,12 +34,30 @@ public sealed class ManualVerifyService(Db db, Verifier verifier, YtDlp ytdlp, I
     {
         List<Track> manual;
         using (var c = db.Open())
-            manual = c.Query<Track>("SELECT * FROM tracks WHERE state='Manual' AND file_path IS NOT NULL").ToList();
+            manual = c.Query<Track>("SELECT * FROM tracks WHERE state='Manual'").ToList();
 
-        int checkedCount = 0, flagged = 0;
+        int checkedCount = 0, flagged = 0, linked = 0, requeued = 0;
         foreach (var t in manual)
         {
             if (ct.IsCancellationRequested) break;
+
+            // sldl decides "already present" by title alone (ignoring the artist), so it reports
+            // tracks as owned that aren't — leaving them Manual with no file_path, never downloaded
+            // and never checked. Trust our own artist+duration-confirmed index instead: link the file
+            // if it really is there, otherwise the track simply isn't owned — requeue it. There is no
+            // file to judge, so this needs no manual review.
+            if (t.FilePath is null)
+            {
+                t.FilePath = reconcile.LinkExistingFile(t.Id);
+                if (t.FilePath is null)
+                {
+                    SetState(t.Id, "Pending");
+                    Record(t.Id, "ManualNotOwned", "reported as already in your library, but it isn't there — queued for download");
+                    requeued++;
+                    continue;
+                }
+                linked++;
+            }
 
             // Manual tracks never went through the download pipeline's enrichment step, so their
             // artist/title are often still the raw YouTube channel/video title (e.g. "officialddt"
@@ -53,28 +71,37 @@ public sealed class ManualVerifyService(Db db, Verifier verifier, YtDlp ytdlp, I
             catch (Exception ex) { log.LogWarning("manual verify failed for track {Id}: {Msg}", t.Id, ex.Message); continue; }
             checkedCount++;
 
-            using var c = db.Open();
             if (v.Outcome == VerifyOutcome.Mismatch)
             {
-                c.Execute("UPDATE tracks SET state='ManualReview', updated_at=datetime('now') WHERE id=@id", new { id = t.Id });
-                c.Execute(@"INSERT INTO download_attempts(track_id, started_at, finished_at, result, failure_reason)
-                            VALUES(@id, datetime('now'), datetime('now'), 'ManualMismatch', @d)",
-                    new { id = t.Id, d = v.Detail });
+                SetState(t.Id, "ManualReview");
+                Record(t.Id, "ManualMismatch", v.Detail);
                 flagged++;
             }
             else
             {
                 // Passed on its own — counts the same as a manual "keep": confirmed, no longer
                 // just "in library, unchecked".
-                c.Execute("UPDATE tracks SET state='Verified', updated_at=datetime('now') WHERE id=@id", new { id = t.Id });
-                c.Execute(@"INSERT INTO download_attempts(track_id, started_at, finished_at, result, failure_reason)
-                            VALUES(@id, datetime('now'), datetime('now'), 'ManualVerified', @d)",
-                    new { id = t.Id, d = v.Detail });
+                SetState(t.Id, "Verified");
+                Record(t.Id, "ManualVerified", v.Detail);
             }
         }
 
-        _last = $"checked {checkedCount}, flagged {flagged} for review";
+        _last = $"checked {checkedCount}, linked {linked}, requeued {requeued}, flagged {flagged} for review";
         log.LogInformation("Manual verify: {Res}", _last);
+    }
+
+    private void SetState(long id, string state)
+    {
+        using var c = db.Open();
+        c.Execute("UPDATE tracks SET state=@s, updated_at=datetime('now') WHERE id=@id", new { s = state, id });
+    }
+
+    private void Record(long id, string result, string? detail)
+    {
+        using var c = db.Open();
+        c.Execute(@"INSERT INTO download_attempts(track_id, started_at, finished_at, result, failure_reason)
+                    VALUES(@id, datetime('now'), datetime('now'), @r, @d)",
+            new { id, r = result, d = detail });
     }
 
     // Same enrichment SyncService.EnrichAsync/Downloader already do per-track — pulls authoritative
@@ -122,6 +149,7 @@ WHERE id=@id",
         switch (decision)
         {
             case "keep":
+                if (t.FilePath is null) return (false, null, "no file is linked to this track — nothing to keep");
                 c.Execute("UPDATE tracks SET state='Verified', updated_at=datetime('now') WHERE id=@id", new { id = trackId });
                 return (true, "Verified", null);
 

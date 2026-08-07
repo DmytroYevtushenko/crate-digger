@@ -9,7 +9,7 @@ namespace Crate.Api;
 /// States: Queued -> Downloading -> Verified | Mismatch (quarantined) | Manual (already in lib) | Failed.
 /// Stop() cancels the running queue (kills the in-flight sldl) and returns tracks to Pending.
 /// </summary>
-public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier verifier, Tagger tagger, ILogger<Downloader> log)
+public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier verifier, Tagger tagger, ReconcileService reconcile, ILogger<Downloader> log)
 {
     private CancellationTokenSource _cts = new();
 
@@ -138,7 +138,12 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
                 }
                 break;
             case DlOutcome.AlreadyExists:
-                state = "Manual";
+                // sldl says the file is already there but won't say which one. Only trust that if our
+                // own index can point at a real file — otherwise the track would sit "in library" with
+                // nothing behind it, never downloaded and never checked. Unconfirmed => still missing.
+                finalPath = reconcile.LinkExistingFile(t.Id);
+                state = finalPath is null ? "Failed" : "Manual";
+                if (finalPath is null) detail = "sldl reported already present, but no matching file is in your library";
                 break;
             default:
                 state = "Failed";

@@ -36,9 +36,9 @@ var sync = new SyncService(db, ytdlp, lf.CreateLogger<SyncService>());
 var sldl = new SldlRunner(app.Configuration, lf.CreateLogger<SldlRunner>());
 var verifier = new Verifier(app.Configuration, lf.CreateLogger<Verifier>());
 var tagger = new Tagger(app.Configuration, lf.CreateLogger<Tagger>());
-var downloader = new Downloader(db, ytdlp, sldl, verifier, tagger, lf.CreateLogger<Downloader>());
 var reconcile = new ReconcileService(db, app.Configuration, lf.CreateLogger<ReconcileService>());
-var manualVerify = new ManualVerifyService(db, verifier, ytdlp, lf.CreateLogger<ManualVerifyService>());
+var downloader = new Downloader(db, ytdlp, sldl, verifier, tagger, reconcile, lf.CreateLogger<Downloader>());
+var manualVerify = new ManualVerifyService(db, verifier, ytdlp, reconcile, lf.CreateLogger<ManualVerifyService>());
 var scheduler = new SchedulerService(db, sync, downloader, app.Configuration, lf.CreateLogger<SchedulerService>());
 scheduler.Start(app.Lifetime.ApplicationStopping);
 

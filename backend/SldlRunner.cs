@@ -63,7 +63,10 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         args.Add("--remove-ft");
         args.Add("-p"); args.Add(dest);
         if (cfg["SldlIndexPath"] is { Length: > 0 } idx) { args.Add("--index-path"); args.Add(idx); }
-        if (cfg["MusicLibDir"] is { Length: > 0 } lib) { args.Add("--skip-music-dir"); args.Add(lib); }
+        // No --skip-music-dir: sldl decides "already owned" by title alone, ignoring the artist, so it
+        // reported e.g. "Скриптонит - Стиль" as owned because the library holds "Wellboy - Стиль" — the
+        // track then never downloaded. Ownership is Crate's call (Reconcile confirms artist + duration),
+        // and only tracks Crate considers missing are queued here in the first place.
         args.Add("--write-playlist"); args.Add("false");
         args.Add("--fast-search");
 
@@ -116,7 +119,10 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         CleanupNew(dest, beforeAll);
 
         var low = (stdout + "\n" + stderr).ToLowerInvariant();
-        if (low.Contains("already exist") || low.Contains("skipped") || low.Contains("exists in"))
+        // Match only a genuine "already exists" claim. A bare "skipped" also covers tracks sldl skips
+        // because its index says they failed last time — reading that as "you already own it" left
+        // tracks marked in-library with no file, never downloaded and never checked.
+        if (low.Contains("already exist") || low.Contains("exists in"))
             return new DlResult(DlOutcome.AlreadyExists, null, "sldl reported already present");
         if (code != 0)
         {
