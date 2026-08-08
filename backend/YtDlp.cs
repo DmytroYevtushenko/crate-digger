@@ -127,25 +127,52 @@ public sealed class YtDlp(string exe = "yt-dlp", string? cookiesPath = null)
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        if (!string.IsNullOrEmpty(cookiesPath) && File.Exists(cookiesPath))
+        // yt-dlp writes the cookie jar back to whatever file it was given, so pointing it straight at
+        // the uploaded cookies.txt lets a single rotated or dropped cookie overwrite the file for
+        // good. Hand it a throwaway copy instead and keep the upload exactly as it arrived.
+        var jar = CopyCookieJar();
+        if (jar is not null)
         {
             psi.ArgumentList.Add("--cookies");
-            psi.ArgumentList.Add(cookiesPath);
+            psi.ArgumentList.Add(jar);
         }
         foreach (var a in args) psi.ArgumentList.Add(a);
 
-        using var p = Process.Start(psi)
-            ?? throw new InvalidOperationException($"failed to start {exe}");
-        var stdoutTask = p.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = p.StandardError.ReadToEndAsync(ct);
-        await p.WaitForExitAsync(ct);
-        var stdout = await stdoutTask;
-        if (p.ExitCode != 0)
+        try
         {
-            var stderr = await stderrTask;
-            throw new InvalidOperationException($"yt-dlp exit {p.ExitCode}: {stderr.Trim()}");
+            using var p = Process.Start(psi)
+                ?? throw new InvalidOperationException($"failed to start {exe}");
+            var stdoutTask = p.StandardOutput.ReadToEndAsync(ct);
+            var stderrTask = p.StandardError.ReadToEndAsync(ct);
+            await p.WaitForExitAsync(ct);
+            var stdout = await stdoutTask;
+            if (p.ExitCode != 0)
+            {
+                var stderr = await stderrTask;
+                throw new InvalidOperationException($"yt-dlp exit {p.ExitCode}: {stderr.Trim()}");
+            }
+            return stdout;
         }
-        return stdout;
+        finally
+        {
+            if (jar is not null) { try { File.Delete(jar); } catch { /* ignore */ } }
+        }
+    }
+
+    /// <summary>A disposable copy of the cookie file, or null if there is none to copy.</summary>
+    private string? CopyCookieJar()
+    {
+        if (string.IsNullOrEmpty(cookiesPath) || !File.Exists(cookiesPath)) return null;
+        try
+        {
+            var copy = Path.Combine(Path.GetTempPath(), "crate-cookies-" + Guid.NewGuid().ToString("N") + ".txt");
+            File.Copy(cookiesPath, copy);
+            return copy;
+        }
+        catch
+        {
+            return null; // no cookies is better than a clobbered cookie file
+        }
     }
 
     private static string? Str(JsonElement e, string key) =>

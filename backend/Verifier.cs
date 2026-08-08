@@ -173,7 +173,12 @@ public sealed class Verifier(IConfiguration cfg, ILogger<Verifier> log)
                 "-x", "--audio-format", "wav", "--no-playlist", "--no-warnings",
                 "--download-sections", $"*0-{seconds}", "-o", Path.Combine(tmpDir, "ref.%(ext)s"),
             };
-            if (!string.IsNullOrEmpty(cookies) && File.Exists(cookies)) { args.Add("--cookies"); args.Add(cookies); }
+            // A copy, not the original — yt-dlp rewrites the jar it is handed (see YtDlp.CopyCookieJar).
+            if (!string.IsNullOrEmpty(cookies) && File.Exists(cookies))
+            {
+                var jar = Path.Combine(tmpDir, "cookies.txt");
+                try { File.Copy(cookies, jar); args.Add("--cookies"); args.Add(jar); } catch { /* go without */ }
+            }
             args.Add($"https://music.youtube.com/watch?v={t.ExternalId}");
 
             var (code, _, err) = await Run(ytdlp, args.ToArray(), ct);

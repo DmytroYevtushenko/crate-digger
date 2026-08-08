@@ -55,8 +55,11 @@ public sealed class ReconcileService(Db db, IConfiguration cfg, ILogger<Reconcil
                 var size = fi.Length;
 
                 using var c = db.Open();
-                var ex = c.QueryFirstOrDefault("SELECT mtime, size FROM library_files WHERE path=@p", new { p = f });
-                if (ex is not null && (long?)ex.mtime == mtime && (long?)ex.size == size) { skipped++; continue; }
+                var ex = c.QueryFirstOrDefault("SELECT mtime, size, title FROM library_files WHERE path=@p", new { p = f });
+                // A row with no title is one we failed to read tags off — re-probe it even though the
+                // file itself hasn't changed, so a fix to tag reading heals the index on the next run.
+                if (ex is not null && (long?)ex.mtime == mtime && (long?)ex.size == size
+                    && !string.IsNullOrWhiteSpace((string?)ex.title)) { skipped++; continue; }
 
                 var (artist, title, _, dur, bitrate) = await ProbeAsync(f, ct);
                 c.Execute(@"
@@ -315,7 +318,13 @@ WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
-            foreach (var a in new[] { "-v", "error", "-show_entries", "format=duration,bit_rate:format_tags=artist,title,album", "-of", "json", path })
+            // Stream tags as well as format tags: Ogg/Opus keeps its Vorbis comments on the stream, so
+            // asking for format_tags alone indexed every .opus with no artist/title at all — which
+            // dropped it out of the matcher entirely (Profiles() needs a title) and made every
+            // YouTube download invisible to rematch.
+            foreach (var a in new[] { "-v", "error", "-show_entries",
+                         "format=duration,bit_rate:format_tags=artist,title,album:stream_tags=artist,title,album",
+                         "-of", "json", path })
                 psi.ArgumentList.Add(a);
 
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("cannot start ffprobe");
@@ -338,6 +347,15 @@ WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
                 title = Tag(tags, "title");
                 album = Tag(tags, "album");
             }
+            if (artist is null || title is null || album is null)
+                foreach (var s in doc.RootElement.TryGetProperty("streams", out var streams)
+                             ? streams.EnumerateArray() : [])
+                {
+                    if (!s.TryGetProperty("tags", out var st)) continue;
+                    artist ??= Tag(st, "artist");
+                    title ??= Tag(st, "title");
+                    album ??= Tag(st, "album");
+                }
             return (artist, title, album, dur, bitrate);
         }
         catch (Exception ex)
@@ -351,7 +369,11 @@ WHERE file_path IS NOT NULL AND (bitrate_kbps IS NULL OR size_bytes IS NULL)");
     {
         foreach (var prop in tags.EnumerateObject())
             if (string.Equals(prop.Name, key, StringComparison.OrdinalIgnoreCase))
-                return prop.Value.GetString();
+            {
+                var v = prop.Value.GetString();
+                // An empty tag is no tag — otherwise it would shadow the same tag on the stream.
+                return string.IsNullOrWhiteSpace(v) ? null : v;
+            }
         return null;
     }
 }
