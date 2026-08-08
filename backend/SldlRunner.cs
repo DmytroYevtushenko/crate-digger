@@ -41,8 +41,8 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
 
         var dest = src.DestDir;
         Directory.CreateDirectory(dest);
-        var before = Snapshot(dest);
-        var beforeAll = AllFiles(dest);
+        // sldl downloads into a scratch folder of its own, never straight into the inbox — see Staging.
+        var stage = Staging.Create(dest);
 
         // One-row CSV so sldl matches structurally (Length must be in seconds).
         var csvPath = Path.Combine(Path.GetTempPath(), "crate-" + Guid.NewGuid().ToString("N") + ".csv");
@@ -56,13 +56,13 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         if (!string.IsNullOrEmpty(Pass)) { args.Add("--pass"); args.Add(Pass); }
         args.Add("--pref-format"); args.Add(string.IsNullOrWhiteSpace(src.Pref) ? "flac" : src.Pref!);
         if (!string.IsNullOrWhiteSpace(src.Cond)) { args.Add("--cond"); args.Add(src.Cond!); args.Add("--strict-conditions"); }
-        // Land the file flat in dest with a clean name — otherwise sldl creates a subfolder
-        // named after the input CSV (crate-<guid>/) for every single track.
+        // Land the file flat with a clean name — otherwise sldl creates a subfolder named after the
+        // input CSV (crate-<guid>/) for every single track.
         args.Add("--name-format"); args.Add("{sartist( - )stitle|filename}");
         args.Add("--length-tol"); args.Add("5");
         args.Add("--strict-artist");
         args.Add("--remove-ft");
-        args.Add("-p"); args.Add(dest);
+        args.Add("-p"); args.Add(stage);
         // No --index-path either: sldl's index is a second, independent record of "already handled"
         // that never expires, so a track it once attempted is skipped forever with "1 tracks already
         // exist" — it won't even search. Crate's own per-track state decides what to (re)try, and only
@@ -93,18 +93,20 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             TryDelete(csvPath);
+            Staging.Discard(stage);
             throw; // user pressed Stop
         }
         catch (OperationCanceledException)
         {
             TryDelete(csvPath);
-            CleanupNew(dest, beforeAll);
+            Staging.Discard(stage);
             log.LogWarning("sldl timed out after {Sec}s for '{Label}'", timeoutSec, label);
             return new DlResult(DlOutcome.Error, null, $"timed out after {timeoutSec}s");
         }
         catch (Exception ex)
         {
             TryDelete(csvPath);
+            Staging.Discard(stage);
             log.LogWarning("sldl failed to start for '{Label}': {Msg}", label, ex.Message);
             return new DlResult(DlOutcome.Error, null, ex.Message);
         }
@@ -114,19 +116,19 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         }
         TryDelete(csvPath);
 
-        var after = Snapshot(dest);
-        var newFiles = after.Where(kv => !before.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList();
+        // Everything in the staging folder came from this attempt — no diffing, no guessing.
+        var newFiles = Staging.Files(stage, AudioExt);
         if (newFiles.Count > 0)
         {
-            // sldl may have pulled a whole album folder — keep only the best-matching track,
-            // delete every other new file (extra mixes, cover art, @eaDir) and empty dirs.
-            var kept = PickBest(newFiles, label);
-            CleanupExtras(dest, beforeAll, kept);
+            // sldl may have pulled a whole album — keep only the best-matching track and let the
+            // rest (extra mixes, cover art, @eaDir) go with the staging folder.
+            var kept = Staging.MoveOut(PickBest(newFiles, label), dest);
+            Staging.Discard(stage);
             return new DlResult(DlOutcome.Downloaded, kept, null);
         }
 
-        // Nothing usable downloaded — remove any partial/leftover files this attempt created.
-        CleanupNew(dest, beforeAll);
+        // Nothing usable downloaded — the partials go with the staging folder.
+        Staging.Discard(stage);
 
         var low = (stdout + "\n" + stderr).ToLowerInvariant();
         // Match only a genuine "already exists" claim. A bare "skipped" also covers tracks sldl skips
@@ -159,15 +161,6 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         try { if (File.Exists(path)) File.Delete(path); } catch { /* ignore */ }
     }
 
-    private static HashSet<string> AllFiles(string dir)
-    {
-        var set = new HashSet<string>(StringComparer.Ordinal);
-        if (Directory.Exists(dir))
-            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-                set.Add(f);
-        return set;
-    }
-
     // Pick the new audio file whose filename best matches the target label (most shared words).
     private static string PickBest(List<string> files, string label)
     {
@@ -189,43 +182,6 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         var sb = new StringBuilder();
         foreach (var c in s.ToLowerInvariant()) sb.Append(char.IsLetterOrDigit(c) ? c : ' ');
         return sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(t => t.Length > 1);
-    }
-
-    // Delete every new file except the one we keep, then remove any emptied directories.
-    private void CleanupExtras(string dir, HashSet<string> before, string kept)
-    {
-        if (!Directory.Exists(dir)) return;
-        foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).ToList())
-        {
-            if (before.Contains(f) || f == kept) continue;
-            try { File.Delete(f); } catch { /* ignore */ }
-        }
-        foreach (var d in Directory.EnumerateDirectories(dir, "*", SearchOption.AllDirectories)
-                     .OrderByDescending(x => x.Length).ToList())
-        {
-            try { if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d); } catch { /* ignore */ }
-        }
-    }
-
-    private void CleanupNew(string dir, HashSet<string> before)
-    {
-        if (!Directory.Exists(dir)) return;
-        foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-        {
-            if (before.Contains(f)) continue;
-            try { File.Delete(f); log.LogInformation("cleaned leftover {File}", f); }
-            catch (Exception ex) { log.LogWarning("cleanup failed for {File}: {Msg}", f, ex.Message); }
-        }
-    }
-
-    private Dictionary<string, long> Snapshot(string dir)
-    {
-        var map = new Dictionary<string, long>();
-        if (!Directory.Exists(dir)) return map;
-        foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-            if (AudioExt.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                map[f] = new FileInfo(f).Length;
-        return map;
     }
 
     private async Task<(int, string, string)> RunAsync(List<string> args, CancellationToken ct)

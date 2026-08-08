@@ -92,28 +92,31 @@ public sealed class YtDlp(string exe = "yt-dlp", string? cookiesPath = null)
         Directory.CreateDirectory(destDir);
         var safeStem = string.Join("_", fileStem.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
         if (safeStem.Length == 0) safeStem = videoId;
-        var template = Path.Combine(destDir, safeStem + ".%(ext)s");
+        // Download into a private scratch folder, not the inbox itself — a parallel sldl run would
+        // otherwise mistake this file for its own result (see Staging).
+        var stage = Staging.Create(destDir);
+        var template = Path.Combine(stage, safeStem + ".%(ext)s");
 
-        var before = SnapshotAudio(destDir);
-        // -x with no --audio-format remuxes the stream into a proper container (webm -> .opus) without
-        // re-encoding, so nothing is lost and the file lands with an extension the library scan indexes.
-        await RunAsync([
-            "-f", "bestaudio", "-x", "--no-playlist", "--no-warnings",
-            "--embed-metadata", "-o", template,
-            $"https://music.youtube.com/watch?v={videoId}",
-        ], ct);
+        try
+        {
+            // -x with no --audio-format remuxes the stream into a proper container (webm -> .opus) without
+            // re-encoding, so nothing is lost and the file lands with an extension the library scan indexes.
+            await RunAsync([
+                "-f", "bestaudio", "-x", "--no-playlist", "--no-warnings",
+                "--embed-metadata", "-o", template,
+                $"https://music.youtube.com/watch?v={videoId}",
+            ], ct);
 
-        return SnapshotAudio(destDir).Except(before).OrderByDescending(f => new FileInfo(f).Length).FirstOrDefault();
+            var got = Staging.Files(stage, AudioExt).OrderByDescending(f => new FileInfo(f).Length).FirstOrDefault();
+            return got is null ? null : Staging.MoveOut(got, destDir);
+        }
+        finally
+        {
+            Staging.Discard(stage);
+        }
     }
 
     private static readonly string[] AudioExt = [".flac", ".mp3", ".m4a", ".ogg", ".opus", ".webm", ".wav"];
-
-    private static HashSet<string> SnapshotAudio(string dir) =>
-        Directory.Exists(dir)
-            ? Directory.EnumerateFiles(dir)
-                .Where(f => AudioExt.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                .ToHashSet()
-            : [];
 
     private async Task<string> RunAsync(string[] args, CancellationToken ct)
     {

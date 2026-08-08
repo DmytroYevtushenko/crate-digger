@@ -47,6 +47,8 @@ public sealed class ReconcileService(Db db, IConfiguration cfg, ILogger<Reconcil
             {
                 if (ct.IsCancellationRequested) break;
                 if (!AudioExt.Contains(Path.GetExtension(f).ToLowerInvariant())) continue;
+                // A download in flight — indexing a half-written file would record bogus duration/size.
+                if (Staging.IsStaged(f)) continue;
 
                 var fi = new FileInfo(f);
                 var mtime = fi.LastWriteTimeUtc.Ticks;
