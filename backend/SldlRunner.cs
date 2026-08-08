@@ -24,6 +24,7 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
     private string Exe => cfg["SldlPath"] ?? "sldl";
     private string? User => cfg["SLDL_USER"];
     private string? Pass => cfg["SLDL_PASS"];
+    private int ListenPort => int.TryParse(cfg["SldlListenPort"], out var p) && p is > 1024 and < 32768 ? p : 21098;
 
     // sldl always binds a fixed Soulseek listen port under one shared account, so two instances
     // running at once (e.g. a manual retry overlapping the batch queue) fight over the port and
@@ -72,6 +73,12 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         // and only tracks Crate considers missing are queued here in the first place.
         args.Add("--write-playlist"); args.Add("false");
         args.Add("--fast-search");
+        // sldl's default incoming port (49998) sits inside the kernel's ephemeral range
+        // (32768-60999). We share a network namespace with gluetun's other clients (qbittorrent &
+        // friends), so one of their outgoing connections can hold 49998 as its local port and sldl
+        // then dies at login with "Failed to start listening on 0.0.0.0:49998". Bind below the
+        // ephemeral range instead, where nothing else can squat.
+        args.Add("--listen-port"); args.Add(ListenPort.ToString());
 
         int code;
         string stdout, stderr;

@@ -22,6 +22,10 @@ services:
       - SldlPath=/usr/local/bin/sldl
       - MusicLibDir=/library/music
       - SldlIndexPath=/data/sldl_index.db
+      # Soulseek incoming port. Must stay below the kernel's ephemeral range (32768-60999):
+      # inside gluetun's namespace qbittorrent & co. can grab such a port for an outgoing
+      # connection, and sldl then fails to bind and dies at login.
+      - SldlListenPort=${SLDL_LISTEN_PORT:-21098}
       # Soulseek credentials (set in .env or the Portainer stack env):
       - SLDL_USER=${SLDL_USER:-}
       - SLDL_PASS=${SLDL_PASS:-}
