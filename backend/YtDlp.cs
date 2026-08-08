@@ -159,6 +159,27 @@ public sealed class YtDlp(string exe = "yt-dlp", string? cookiesPath = null)
         }
     }
 
+    /// <summary>
+    /// Turns a yt-dlp failure into something worth reading. Most of these are YouTube refusing to
+    /// serve the video at all, which no amount of retrying or fresher cookies will change — saying so
+    /// beats showing a wall of yt-dlp advice about exporting cookies.
+    /// </summary>
+    public static string Explain(string raw)
+    {
+        var low = raw.ToLowerInvariant();
+        if (low.Contains("private video"))
+            return "the video is private on YouTube — Soulseek is the only route left";
+        if (low.Contains("video unavailable") || low.Contains("has been removed") || low.Contains("account associated"))
+            return "the video is gone from YouTube — Soulseek is the only route left";
+        if (low.Contains("only available on youtube") || low.Contains("requested format is not available"))
+            return "YouTube serves no audio stream for this video (usually age-restricted) — try Soulseek";
+        if (low.Contains("sign in to confirm your age"))
+            return "age-restricted and the stored cookies are not signed in — re-upload cookies";
+        if (low.Contains("sign in to confirm you") || low.Contains("not a bot"))
+            return "YouTube is rate-limiting this server — re-upload fresh cookies or retry later";
+        return raw;
+    }
+
     /// <summary>A disposable copy of the cookie file, or null if there is none to copy.</summary>
     private string? CopyCookieJar()
     {

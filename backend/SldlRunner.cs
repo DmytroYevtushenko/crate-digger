@@ -136,6 +136,11 @@ public sealed class SldlRunner(IConfiguration cfg, ILogger<SldlRunner> log)
         // tracks marked in-library with no file, never downloaded and never checked.
         if (low.Contains("already exist") || low.Contains("exists in"))
             return new DlResult(DlOutcome.AlreadyExists, null, "sldl reported already present");
+        // "Nobody on Soulseek is sharing this" is an ordinary outcome, but sldl still exits non-zero
+        // with "One or more child jobs failed" — which read as a tool malfunction and buried the one
+        // fact that matters: there is nothing to download, so retrying changes nothing.
+        if (low.Contains("no search results") || low.Contains("no soulseek file results"))
+            return new DlResult(DlOutcome.NotFound, null, "nobody on Soulseek is sharing this track");
         if (code != 0)
         {
             var tail = Tail(stdout + "\n" + stderr);

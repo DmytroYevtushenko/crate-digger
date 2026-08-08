@@ -180,7 +180,7 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         if (t is null) return (null, "track not found");
         if (t.ExternalId is null) return (null, "track has no YouTube source");
         try { return (await ytdlp.GetBestAudioAsync(t.ExternalId, ct), null); }
-        catch (Exception ex) { return (null, ex.Message); }
+        catch (Exception ex) { return (null, YtDlp.Explain(ex.Message)); }
     }
 
     /// <summary>
@@ -213,8 +213,9 @@ public sealed class Downloader(Db db, YtDlp ytdlp, SldlRunner sldl, Verifier ver
         }
         catch (Exception ex)
         {
-            Finish(t.Id, "Failed", null, null, null, "YoutubeError", ex.Message);
-            return (false, null, null, ex.Message);
+            var why = YtDlp.Explain(ex.Message);
+            Finish(t.Id, "Failed", null, null, null, "YoutubeError", why);
+            return (false, null, null, why);
         }
 
         if (path is null)
